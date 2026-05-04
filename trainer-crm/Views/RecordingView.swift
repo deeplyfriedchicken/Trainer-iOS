@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import Photos
 @preconcurrency import AVFoundation
 
 // MARK: - Recording View
@@ -614,6 +615,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureFileOutputRecord
         Task {
             let camOK = await AVCaptureDevice.requestAccess(for: .video)
             let micOK = await AVCaptureDevice.requestAccess(for: .audio)
+            await PHPhotoLibrary.requestAuthorization(for: .addOnly)
             guard camOK && micOK else { return }
             await buildSession(position: currentPosition)
         }
@@ -643,7 +645,16 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureFileOutputRecord
                                 from connections: [AVCaptureConnection],
                                 error: Error?) {
         guard error == nil else { return }
+        saveToCameraRoll(url)
         Task { @MainActor in self.onFinished?(url) }
+    }
+
+    nonisolated private func saveToCameraRoll(_ url: URL) {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        guard status == .authorized || status == .limited else { return }
+        PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+        }
     }
 
     // MARK: - Private

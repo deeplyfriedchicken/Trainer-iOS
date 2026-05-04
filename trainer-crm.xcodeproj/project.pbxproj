@@ -403,6 +403,7 @@
 				INFOPLIST_KEY_CFBundleURLTypes = "({CFBundleURLSchemes = ('trainer-crm');})";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trainer CRM needs camera access to record client training sessions.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Trainer CRM needs microphone access to record audio during client sessions.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trainer CRM saves recorded session videos to your camera roll.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -438,6 +439,7 @@
 				INFOPLIST_KEY_CFBundleURLTypes = "({CFBundleURLSchemes = ('trainer-crm');})";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trainer CRM needs camera access to record client training sessions.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Trainer CRM needs microphone access to record audio during client sessions.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trainer CRM saves recorded session videos to your camera roll.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
