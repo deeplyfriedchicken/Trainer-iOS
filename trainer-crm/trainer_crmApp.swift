@@ -1,32 +1,33 @@
-//
-//  trainer_crmApp.swift
-//  trainer-crm
-//
-//  Created by Kevin Cunanan on 4/30/26.
-//
-
 import SwiftUI
-import SwiftData
 
 @main
-struct trainer_crmApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+struct TrainerCRMApp: App {
+    @State private var store = AppStore()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(store)
+                .preferredColorScheme(.dark)
+                .task { await store.checkAuth() }
+                .onReceive(NotificationCenter.default.publisher(for: .apiUnauthorized)) { _ in
+                    store.signOut()
+                }
         }
-        .modelContainer(sharedModelContainer)
+    }
+}
+
+struct RootView: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        Group {
+            if store.isAuthenticated {
+                ContentView()
+            } else {
+                LoginView()
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: store.isAuthenticated)
     }
 }

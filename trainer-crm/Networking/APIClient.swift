@@ -1,0 +1,377 @@
+import Foundation
+
+enum APIError: Error, LocalizedError, Equatable {
+    case unauthorized
+    case notFound
+    case serverError(Int)
+    case networkError(Error)
+    case decodingError(Error)
+
+    static func == (lhs: APIError, rhs: APIError) -> Bool {
+        switch (lhs, rhs) {
+        case (.unauthorized, .unauthorized):             return true
+        case (.notFound, .notFound):                     return true
+        case (.serverError(let a), .serverError(let b)): return a == b
+        case (.networkError, .networkError):             return true
+        case (.decodingError, .decodingError):           return true
+        default:                                         return false
+        }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .unauthorized:        return "Session expired. Please log in again."
+        case .notFound:            return "Resource not found."
+        case .serverError(let c):  return "Server error (\(c))."
+        case .networkError(let e): return e.localizedDescription
+        case .decodingError:       return "Unexpected response from server."
+        }
+    }
+}
+
+extension Notification.Name {
+    static let apiUnauthorized = Notification.Name("APIUnauthorized")
+}
+
+@MainActor
+final class APIClient {
+    static let shared = APIClient()
+
+    private let baseURL: URL = {
+        guard let url = URL(string: ProcessInfo.processInfo.environment["API_BASE_URL"] ?? "http://localhost:3000") else {
+            fatalError("Invalid API_BASE_URL")
+        }
+        return url
+    }()
+
+    private let session = URLSession.shared
+    private let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
+    private let encoder = JSONEncoder()
+
+    // MARK: - Primitives
+
+    func get<T: Decodable>(_ path: String) async throws -> T {
+        try await request(method: "GET", path: path)
+    }
+
+    func post<B: Encodable, T: Decodable>(_ path: String, body: B) async throws -> T {
+        try await request(method: "POST", path: path, bodyData: try encoder.encode(body))
+    }
+
+    func patch<B: Encodable, T: Decodable>(_ path: String, body: B) async throws -> T {
+        try await request(method: "PATCH", path: path, bodyData: try encoder.encode(body))
+    }
+
+    func delete(_ path: String) async throws {
+        let _: EmptyResponse = try await request(method: "DELETE", path: path)
+    }
+
+    // MARK: - Domain methods
+
+    func fetchMe() async throws -> UserResponse {
+        let wrapper: DataWrapper<UserResponse> = try await get("/api/auth/me")
+        return wrapper.data
+    }
+
+    func fetchTrainees(limit: Int = 50, offset: Int = 0) async throws -> [TraineeResponse] {
+        let wrapper: PaginatedWrapper<TraineeResponse> = try await get("/api/trainees?limit=\(limit)&offset=\(offset)")
+        return wrapper.data
+    }
+
+    func createTrainee(name: String, email: String) async throws -> TraineeResponse {
+        let wrapper: DataWrapper<TraineeResponse> = try await post("/api/trainees", body: ["name": name, "email": email])
+        return wrapper.data
+    }
+
+    func updateTrainee(id: String, name: String?, email: String?) async throws -> TraineeResponse {
+        var body: [String: String] = [:]
+        if let name  { body["name"]  = name  }
+        if let email { body["email"] = email }
+        let wrapper: DataWrapper<TraineeResponse> = try await patch("/api/trainees/\(id)", body: body)
+        return wrapper.data
+    }
+
+    func fetchTrainee(id: String) async throws -> TraineeDetailResponse {
+        let wrapper: DataWrapper<TraineeDetailResponse> = try await get("/api/trainees/\(id)")
+        return wrapper.data
+    }
+
+    func deleteTrainee(id: String) async throws {
+        try await delete("/api/trainees/\(id)")
+    }
+
+    func fetchTrainers(limit: Int = 50, offset: Int = 0) async throws -> [TrainerResponse] {
+        let wrapper: PaginatedWrapper<TrainerResponse> = try await get("/api/trainers?limit=\(limit)&offset=\(offset)")
+        return wrapper.data
+    }
+
+    func createTrainer(name: String, email: String, role: String) async throws -> TrainerResponse {
+        let wrapper: DataWrapper<TrainerResponse> = try await post("/api/trainers", body: ["name": name, "email": email, "role": role])
+        return wrapper.data
+    }
+
+    func updateTrainer(id: String, name: String?, email: String?, role: String?) async throws -> TrainerResponse {
+        var body: [String: String] = [:]
+        if let name  { body["name"]  = name  }
+        if let email { body["email"] = email }
+        if let role  { body["role"]  = role  }
+        let wrapper: DataWrapper<TrainerResponse> = try await patch("/api/trainers/\(id)", body: body)
+        return wrapper.data
+    }
+
+    func deleteTrainer(id: String) async throws {
+        try await delete("/api/trainers/\(id)")
+    }
+
+    func uploadVideo(fileURL: URL, title: String, traineeId: String) async throws -> VideoUploadResult {
+        let mimeType = fileURL.pathExtension.lowercased() == "mp4" ? "video/mp4" : "video/quicktime"
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
+
+        // Step 1: get presigned S3 upload URL from server
+        let presign: PresignResponse = try await post(
+            "/api/videos/presign",
+            body: PresignRequest(fileName: fileURL.lastPathComponent, mimeType: mimeType, fileSizeBytes: fileSize, traineeId: traineeId)
+        )
+
+        // Step 2: PUT file directly to S3 — no auth headers, the presigned URL carries auth
+        guard let s3URL = URL(string: presign.uploadUrl) else {
+            throw APIError.networkError(URLError(.badURL))
+        }
+        var s3Req = URLRequest(url: s3URL)
+        s3Req.httpMethod = "PUT"
+        s3Req.setValue(mimeType, forHTTPHeaderField: "Content-Type")
+        do {
+            let (_, s3Response) = try await session.upload(for: s3Req, fromFile: fileURL)
+            guard let http = s3Response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                throw APIError.serverError((s3Response as? HTTPURLResponse)?.statusCode ?? -1)
+            }
+        } catch let err as APIError {
+            throw err
+        } catch {
+            throw APIError.networkError(error)
+        }
+
+        // Step 3: confirm upload → triggers MediaConvert (202 in prod, 200 in dev)
+        let wrapper: DataWrapper<VideoConfirmResponse> = try await patch(
+            "/api/videos/\(presign.videoId)",
+            body: ["title": title]
+        )
+        return VideoUploadResult(videoId: presign.videoId, fileUrl: wrapper.data.fileUrl)
+    }
+
+    // MARK: - Private
+
+    private func request<T: Decodable>(method: String, path: String, bodyData: Data? = nil) async throws -> T {
+        guard let token = KeychainStore.load() else {
+            signOut()
+            throw APIError.unauthorized
+        }
+        guard let url = URL(string: path, relativeTo: baseURL) else {
+            throw APIError.networkError(URLError(.badURL))
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        if let bodyData {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = bodyData
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            throw APIError.networkError(error)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.networkError(URLError(.badServerResponse))
+        }
+
+        switch http.statusCode {
+        case 200...299:
+            if T.self == EmptyResponse.self { return EmptyResponse() as! T }
+            do {
+                return try decoder.decode(T.self, from: data)
+            } catch {
+                throw APIError.decodingError(error)
+            }
+        case 401:
+            signOut()
+            throw APIError.unauthorized
+        case 404:
+            throw APIError.notFound
+        default:
+            throw APIError.serverError(http.statusCode)
+        }
+    }
+
+    private func signOut() {
+        KeychainStore.delete()
+        NotificationCenter.default.post(name: .apiUnauthorized, object: nil)
+    }
+}
+
+// MARK: - Response types
+
+struct EmptyResponse: Codable, Sendable {}
+
+struct DataWrapper<T: Decodable>: Decodable {
+    let data: T
+}
+extension DataWrapper: Sendable where T: Sendable {}
+
+struct PaginatedWrapper<T: Decodable>: Decodable {
+    let data: [T]
+    let pagination: PaginationInfo
+}
+extension PaginatedWrapper: Sendable where T: Sendable {}
+
+struct PaginationInfo: Decodable, Sendable {
+    let limit: Int
+    let offset: Int
+}
+
+struct UserResponse: Decodable, Sendable {
+    let id: String
+    let email: String
+    let name: String
+    let roles: [String]
+}
+
+struct TraineeResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let email: String
+    let planCount: Int?
+    let lastPlanAt: Date?
+    let createdAt: Date?
+}
+
+struct TrainerResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let email: String
+    let roles: [String]?
+    let videoCount: Int?
+    let createdAt: Date?
+}
+
+struct WorkoutPlanResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let traineeId: String
+    let occurredAt: Date?
+    let comment: String?
+    let exercises: [ExerciseResponse]?
+}
+
+struct ExerciseResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let type: String
+    let sets: Int?
+    let reps: Int?
+    let durationSeconds: Int?
+    let weightLbs: Double?
+    let comment: String?
+}
+
+struct TraineeDetailResponse: Decodable, Sendable {
+    let id: String
+    let name: String
+    let email: String
+    let workoutPlans: [WorkoutPlanDetailResponse]?
+    let directVideos: [DirectVideoResponse]?
+}
+
+struct DirectVideoResponse: Decodable, Sendable {
+    let id: String
+    let title: String?
+    let fileUrl: String?
+    let durationSeconds: Int?
+    let createdAt: Date?
+}
+
+struct WorkoutPlanDetailResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let exercises: [ExerciseDetailResponse]?
+}
+
+struct ExerciseDetailResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let type: String
+    let sets: Int?
+    let reps: Int?
+    let durationSeconds: Int?
+    let videoLinks: [VideoLinkResponse]?
+}
+
+struct VideoLinkResponse: Decodable, Sendable {
+    let video: LinkedVideoResponse?
+}
+
+struct LinkedVideoResponse: Decodable, Sendable {
+    let id: String
+    let title: String?
+    let fileUrl: String?
+}
+
+struct ExercisePayload: Encodable, Sendable {
+    let name: String
+    let type: String
+    let sets: Int
+    let reps: Int?
+    let durationSeconds: Int?
+}
+
+struct WorkoutPlanCreateBody: Encodable, Sendable {
+    let traineeId: String
+    let name: String
+    let exercises: [ExercisePayload]
+}
+
+// MARK: - Video types
+
+struct PresignRequest: Encodable, Sendable {
+    let fileName: String
+    let mimeType: String
+    let fileSizeBytes: Int
+    let traineeId: String?
+}
+
+struct PresignResponse: Decodable, Sendable {
+    let videoId: String
+    let uploadUrl: String
+}
+
+struct VideoConfirmResponse: Decodable, Sendable {
+    let id: String
+    let fileUrl: String?
+    let title: String?
+    let status: String?
+}
+
+struct VideoUploadResult: Sendable {
+    let videoId: String
+    let fileUrl: String?
+}
+
+// MARK: - Data helpers
+
+private extension Data {
+    static func += (lhs: inout Data, rhs: String.UTF8View) {
+        lhs.append(contentsOf: rhs)
+    }
+}
