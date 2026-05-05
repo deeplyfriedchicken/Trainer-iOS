@@ -5,7 +5,6 @@ struct TrainersView: View {
     @State private var showAdd = false
     @State private var showEdit: Trainer? = nil
     @State private var showDelete: Trainer? = nil
-    @State private var isRefreshing = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,52 +45,20 @@ struct TrainersView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .refreshable { await store.refreshData() }
         }
         .overlay(alignment: .bottomTrailing) {
-            VStack(spacing: 12) {
-                Button { store.signOut() } label: {
-                    Image(systemName: "rectangle.portrait.and.arrow.right")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.neonRed)
-                        .frame(width: 46, height: 46)
-                        .background(Color.neonRed.opacity(0.12))
-                        .overlay(Circle().stroke(Color.neonRed.opacity(0.30), lineWidth: 1))
-                        .clipShape(Circle())
-                        .shadow(color: .black.opacity(0.3), radius: 8)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    guard !isRefreshing else { return }
-                    isRefreshing = true
-                    Task {
-                        await store.refreshData()
-                        isRefreshing = false
-                    }
-                } label: {
-                    ZStack {
-                        if isRefreshing {
-                            ProgressView()
-                                .tint(.white)
-                                .scaleEffect(0.85)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(.white)
-                        }
-                    }
+            Button { store.signOut() } label: {
+                Image(systemName: "rectangle.portrait.and.arrow.right")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.neonRed)
                     .frame(width: 46, height: 46)
-                    .background(isRefreshing ? Color.white.opacity(0.15) : Color.white.opacity(0.10))
-                    .overlay(Circle().stroke(
-                        isRefreshing ? Color.neonCyan.opacity(0.35) : Color.white.opacity(0.18),
-                        lineWidth: 1
-                    ))
+                    .background(Color.neonRed.opacity(0.12))
+                    .overlay(Circle().stroke(Color.neonRed.opacity(0.30), lineWidth: 1))
                     .clipShape(Circle())
                     .shadow(color: .black.opacity(0.3), radius: 8)
-                    .animation(.easeInOut(duration: 0.15), value: isRefreshing)
-                }
-                .buttonStyle(.plain)
             }
+            .buttonStyle(.plain)
             .padding(.trailing, 20)
             .padding(.bottom, 20)
         }

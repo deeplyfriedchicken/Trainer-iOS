@@ -109,18 +109,52 @@ class AppStore {
     }
 
     func loadClientDetail(_ clientId: String) async {
-        guard let detail = try? await api.fetchTrainee(id: clientId) else { return }
+        let detail: TraineeDetailResponse
+        do {
+            detail = try await api.fetchTrainee(id: clientId)
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return
+        }
         guard let idx = clients.firstIndex(where: { $0.id == clientId }) else { return }
 
-        clients[idx].workouts = (detail.workoutPlans ?? []).map { plan in
+        clients[idx].workoutPlans = (detail.workoutPlans ?? []).map { plan in
             WorkoutPlan(
                 id: plan.id,
                 name: plan.name,
                 exercises: (plan.exercises ?? []).map { ex in
-                    let setsStr = ex.type == "duration"
-                        ? "\(ex.sets ?? 1)×\(ex.durationSeconds ?? 0)s"
-                        : "\(ex.sets ?? 1)×\(ex.reps ?? 0)"
-                    return Exercise(name: ex.name, sets: setsStr, rest: "—")
+                    Exercise(
+                        id: ex.id,
+                        name: ex.name,
+                        exerciseType: ex.type == "duration" ? .duration : .reps,
+                        sets: ex.sets ?? 1,
+                        reps: ex.reps,
+                        durationSeconds: ex.durationSeconds,
+                        comment: ex.comment ?? "",
+                        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id }
+                    )
+                }
+            )
+        }
+
+        clients[idx].workouts = (detail.workouts ?? []).map { w in
+            Workout(
+                id: w.id,
+                name: w.workoutPlan?.name ?? "Workout",
+                occurredAt: w.workoutPlan?.occurredAt,
+                comment: w.comment,
+                exercises: (w.exerciseLinks ?? []).map { link in
+                    let ex = link.exercise
+                    return Exercise(
+                        id: ex?.id ?? link.exerciseId,
+                        name: ex?.name ?? "Exercise",
+                        exerciseType: ex?.type == "duration" ? .duration : .reps,
+                        sets: ex?.sets ?? 1,
+                        reps: ex?.reps,
+                        durationSeconds: ex?.durationSeconds,
+                        comment: "",
+                        videoIds: []
+                    )
                 }
             )
         }
@@ -137,7 +171,13 @@ class AppStore {
         }
 
         let linkedVideos: [ClientVideo] = (detail.workoutPlans ?? []).flatMap { plan in
-            (plan.exercises ?? []).flatMap { ex in
+            let planVideos = (plan.videoLinks ?? []).compactMap { link -> ClientVideo? in
+                guard let v = link.video else { return nil }
+                return ClientVideo(id: v.id, title: v.title ?? plan.name,
+                                   date: "", duration: "",
+                                   url: v.fileUrl.flatMap(URL.init))
+            }
+            let exerciseVideos = (plan.exercises ?? []).flatMap { ex in
                 (ex.videoLinks ?? []).compactMap { link -> ClientVideo? in
                     guard let v = link.video else { return nil }
                     return ClientVideo(id: v.id, title: v.title ?? plan.name,
@@ -145,16 +185,31 @@ class AppStore {
                                        url: v.fileUrl.flatMap(URL.init))
                 }
             }
+            return planVideos + exerciseVideos
         }
 
-        let serverIds = Set(directVideos.map(\.id)).union(linkedVideos.map(\.id))
+        let workoutLinkedVideos: [ClientVideo] = (detail.workouts ?? []).flatMap { w in
+            (w.videoLinks ?? []).compactMap { link -> ClientVideo? in
+                guard let v = link.video else { return nil }
+                return ClientVideo(id: v.id, title: v.title ?? w.workoutPlan?.name ?? "Workout",
+                                   date: "", duration: "",
+                                   url: v.fileUrl.flatMap(URL.init))
+            }
+        }
+
+        let serverIds = Set(directVideos.map(\.id))
+            .union(linkedVideos.map(\.id))
+            .union(workoutLinkedVideos.map(\.id))
         let localOnly = clients[idx].videos.filter { !serverIds.contains($0.id) }
-        // Direct uploads first (newest), then exercise-linked, then in-progress local
-        clients[idx].videos = directVideos + linkedVideos + localOnly
+        let combined = directVideos + linkedVideos + workoutLinkedVideos + localOnly
+        var seen = Set<String>()
+        clients[idx].videos = combined.filter { seen.insert($0.id).inserted }
+        refreshMessage = "Client data refreshed"
     }
 
-    func addVideo(clientId: String, video: ClientVideo) async throws {
-        guard let fileURL = video.url else { return }
+    @discardableResult
+    func addVideo(clientId: String, video: ClientVideo) async throws -> String {
+        guard let fileURL = video.url else { return video.id }
         let uploaded = try await api.uploadVideo(
             fileURL: fileURL,
             title: video.title,
@@ -162,8 +217,39 @@ class AppStore {
         )
         guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
               let vidx = clients[cidx].videos.firstIndex(where: { $0.id == video.id })
-        else { return }
+        else { return uploaded.videoId }
+        clients[cidx].videos[vidx].id = uploaded.videoId
         clients[cidx].videos[vidx].url = uploaded.fileUrl.flatMap(URL.init)
+        return uploaded.videoId
+    }
+
+    func createWorkoutPlan(clientId: String, name: String) async {
+        do {
+            let plan = try await api.createWorkoutPlan(traineeId: clientId, name: name)
+            guard let idx = clients.firstIndex(where: { $0.id == clientId }) else { return }
+            clients[idx].workoutPlans.append(WorkoutPlan(id: plan.id, name: plan.name, exercises: []))
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    func updateWorkoutPlan(planId: String, clientId: String, name: String, exercises: [Exercise]) async {
+        let payload = exercises.map { ex in
+            ExercisePayload(
+                name: ex.name,
+                type: ex.exerciseType.rawValue,
+                sets: ex.sets,
+                reps: ex.exerciseType == .reps ? ex.reps : nil,
+                durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
+                comment: ex.comment.isEmpty ? nil : ex.comment,
+                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds
+            )
+        }
+        do {
+            _ = try await api.updateWorkoutPlan(id: planId, name: name, exercises: payload)
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
     }
 
     func deleteClient(id: String) {
@@ -279,7 +365,8 @@ extension Client {
             trainerId: nil,
             colorIndex: abs(r.id.hashValue) % 5,
             videos: [],
-            workouts: []
+            workouts: [],
+            workoutPlans: []
         )
     }
 }

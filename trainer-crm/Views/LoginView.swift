@@ -6,8 +6,7 @@ struct LoginView: View {
     @State private var isAuthenticating = false
     @State private var errorMessage: String? = nil
 
-    // Must match the base URL used in APIClient
-    private let authURL = URL(string: "\(ProcessInfo.processInfo.environment["API_BASE_URL"] ?? "http://localhost:3000")/api/auth/google?mobile=1")!
+    private let authURL = URL(string: "\(Config.apiBaseURL)/api/auth/google?mobile=1")!
     private let callbackScheme = "trainer-crm"
 
     var body: some View {

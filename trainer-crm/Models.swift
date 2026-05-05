@@ -14,7 +14,8 @@ struct Client: Identifiable {
     var trainerId: String?
     var colorIndex: Int
     var videos: [ClientVideo]
-    var workouts: [WorkoutPlan]
+    var workouts: [Workout]
+    var workoutPlans: [WorkoutPlan]
 
     var initials: String { "\(firstName.prefix(1))\(lastName.prefix(1))" }
     var fullName: String { "\(firstName) \(lastName)" }
@@ -43,10 +44,40 @@ struct WorkoutPlan: Identifiable {
     var exercises: [Exercise]
 }
 
-struct Exercise {
+struct Workout: Identifiable {
+    var id: String = UUID().uuidString
     var name: String
-    var sets: String
-    var rest: String
+    var occurredAt: Date?
+    var comment: String?
+    var exercises: [Exercise]
+}
+
+enum ExerciseType: String, CaseIterable {
+    case reps, duration
+    var displayName: String {
+        switch self {
+        case .reps:     return "Reps"
+        case .duration: return "Duration"
+        }
+    }
+}
+
+struct Exercise: Identifiable {
+    var id: String = UUID().uuidString
+    var name: String
+    var exerciseType: ExerciseType = .reps
+    var sets: Int = 3
+    var reps: Int? = 10
+    var durationSeconds: Int? = nil
+    var comment: String = ""
+    var videoIds: [String] = []
+
+    var displaySets: String {
+        switch exerciseType {
+        case .reps:     return "\(sets)×\(reps ?? 0) reps"
+        case .duration: return "\(sets)×\(durationSeconds ?? 0)s"
+        }
+    }
 }
 
 // MARK: - Video Feed

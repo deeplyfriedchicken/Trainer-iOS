@@ -37,17 +37,11 @@ extension Notification.Name {
 final class APIClient {
     static let shared = APIClient()
 
-    private let baseURL: URL = {
-        guard let url = URL(string: ProcessInfo.processInfo.environment["API_BASE_URL"] ?? "http://localhost:3000") else {
-            fatalError("Invalid API_BASE_URL")
-        }
-        return url
-    }()
+    private let baseURL = URL(string: Config.apiBaseURL)!
 
     private let session = URLSession.shared
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
         d.dateDecodingStrategy = .iso8601
         return d
     }()
@@ -145,6 +139,26 @@ final class APIClient {
         let wrapper: DataWrapper<ChatMessageResponse> = try await post(
             "/api/chats/\(chatId)/messages",
             body: ["text": text]
+        )
+        return wrapper.data
+    }
+
+    func createWorkoutPlan(traineeId: String, name: String, exercises: [ExercisePayload] = []) async throws -> WorkoutPlanResponse {
+        let wrapper: DataWrapper<WorkoutPlanResponse> = try await post(
+            "/api/workout-plans",
+            body: WorkoutPlanCreateBody(traineeId: traineeId, name: name, exercises: exercises)
+        )
+        return wrapper.data
+    }
+
+    func updateWorkoutPlan(id: String, name: String, exercises: [ExercisePayload]) async throws -> WorkoutPlanResponse {
+        struct UpdateBody: Encodable {
+            let name: String
+            let exercises: [ExercisePayload]
+        }
+        let wrapper: DataWrapper<WorkoutPlanResponse> = try await patch(
+            "/api/workout-plans/\(id)",
+            body: UpdateBody(name: name, exercises: exercises)
         )
         return wrapper.data
     }
@@ -318,8 +332,38 @@ struct TraineeDetailResponse: Decodable, Sendable {
     let id: String
     let name: String
     let email: String
+    let workouts: [WorkoutSessionResponse]?
     let workoutPlans: [WorkoutPlanDetailResponse]?
     let directVideos: [DirectVideoResponse]?
+}
+
+struct WorkoutSessionResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let comment: String?
+    let workoutPlan: WorkoutPlanNestedResponse?
+    let videoLinks: [VideoLinkResponse]?
+    let exerciseLinks: [WorkoutExerciseLinkResponse]?
+}
+
+struct WorkoutPlanNestedResponse: Decodable, Sendable {
+    let id: String
+    let name: String
+    let occurredAt: Date?
+}
+
+struct WorkoutExerciseLinkResponse: Decodable, Sendable {
+    let exerciseId: String
+    let exercise: WorkoutExerciseNestedResponse?
+}
+
+struct WorkoutExerciseNestedResponse: Decodable, Sendable {
+    let id: String
+    let name: String
+    let type: String
+    let sets: Int
+    let reps: Int?
+    let durationSeconds: Int?
+    let weightLbs: Double?
 }
 
 struct DirectVideoResponse: Decodable, Sendable {
@@ -334,6 +378,7 @@ struct WorkoutPlanDetailResponse: Decodable, Identifiable, Sendable {
     let id: String
     let name: String
     let exercises: [ExerciseDetailResponse]?
+    let videoLinks: [VideoLinkResponse]?
 }
 
 struct ExerciseDetailResponse: Decodable, Identifiable, Sendable {
@@ -343,6 +388,7 @@ struct ExerciseDetailResponse: Decodable, Identifiable, Sendable {
     let sets: Int?
     let reps: Int?
     let durationSeconds: Int?
+    let comment: String?
     let videoLinks: [VideoLinkResponse]?
 }
 
@@ -362,6 +408,8 @@ struct ExercisePayload: Encodable, Sendable {
     let sets: Int
     let reps: Int?
     let durationSeconds: Int?
+    let comment: String?
+    let videoIds: [String]?
 }
 
 struct WorkoutPlanCreateBody: Encodable, Sendable {
