@@ -9,6 +9,7 @@ class AppStore {
 
     var clients: [Client] = []
     var trainers: [Trainer] = []
+    var currentUser: UserResponse? = nil
     var isAuthenticated: Bool = false
     var isLoading: Bool = false
     var error: APIError? = nil
@@ -29,7 +30,8 @@ class AppStore {
             return
         }
         do {
-            _ = try await api.fetchMe()
+            let me = try await api.fetchMe()
+            currentUser = me
             isAuthenticated = true
             await loadInitialData()
         } catch APIError.unauthorized {
@@ -48,6 +50,7 @@ class AppStore {
         HTTPCookieStorage.shared.cookies?.forEach { HTTPCookieStorage.shared.deleteCookie($0) }
         clients = []
         trainers = []
+        currentUser = nil
         isAuthenticated = false
     }
 

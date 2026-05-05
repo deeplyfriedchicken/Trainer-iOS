@@ -18,8 +18,12 @@ struct ClientDetailView: View {
     @State private var playerItem: AVPlayerItem? = nil
     @State private var playerURL: URL? = nil
     @State private var isRefreshing = false
+    @State private var chatId: String? = nil
+    @State private var chatMessages: [ChatMessageItem] = []
+    @State private var isChatLoading = false
+    @State private var messageText = ""
 
-    enum DetailTab: String, CaseIterable { case overview, workouts, videos }
+    enum DetailTab: String, CaseIterable { case overview, workouts, videos, chat }
 
     var body: some View {
         ZStack {
@@ -43,6 +47,11 @@ struct ClientDetailView: View {
         .animation(.easeInOut(duration: 0.25), value: showRecording)
         .task(id: client.id) {
             await store.loadClientDetail(client.id)
+        }
+        .onChange(of: activeTab) { _, newTab in
+            if newTab == .chat, chatId == nil {
+                Task { await loadChat() }
+            }
         }
         .sheet(isPresented: $showAddExercise) { addExerciseSheet }
         .sheet(isPresented: $showAddWorkout) { addWorkoutSheet }
@@ -136,12 +145,18 @@ struct ClientDetailView: View {
             .padding(.bottom, 12)
 
             // Tab Content
-            ScrollView {
-                switch activeTab {
-                case .overview: overviewContent
-                case .workouts: workoutsContent
-                case .videos:   videosContent
+            if activeTab == .chat {
+                chatContent
+            } else {
+                ScrollView {
+                    switch activeTab {
+                    case .overview: overviewContent
+                    case .workouts: workoutsContent
+                    case .videos:   videosContent
+                    case .chat:    EmptyView()
+                    }
                 }
+                .refreshable { await store.loadClientDetail(client.id) }
             }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -201,7 +216,7 @@ struct ClientDetailView: View {
             ForEach([
                 ("Plan", client.plan),
                 ("Status", client.status.rawValue.capitalized),
-                ("Last Session", client.lastSeen),
+                ("Last workout", client.lastSeen),
             ], id: \.0) { row in
                 HStack {
                     Text(row.0).font(.mono(11)).foregroundStyle(Color.white.opacity(0.45))
@@ -362,6 +377,250 @@ struct ClientDetailView: View {
         }
         .presentationDetents([.medium])
         .presentationBackground(Color(hex: "0c0c1c"))
+    }
+
+    // MARK: - Chat
+
+    private var chatContent: some View {
+        VStack(spacing: 0) {
+            // Header card
+            HStack(spacing: 10) {
+                AvatarView(initials: client.initials, colorIndex: client.colorIndex, size: 36, cornerRadius: 11)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(client.fullName)
+                        .font(.display(15))
+                        .foregroundStyle(.white)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.neonGreen)
+                            .frame(width: 5, height: 5)
+                            .shadow(color: Color.neonGreen, radius: 3)
+                        Text("Online")
+                            .font(.body(11))
+                            .foregroundStyle(Color.neonGreen)
+                    }
+                }
+                Spacer()
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.white.opacity(0.5))
+                    .frame(width: 32, height: 32)
+                    .background(Color.white.opacity(0.08))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.1), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .padding(12)
+            .background(.ultraThinMaterial)
+            .background(Color.white.opacity(0.05))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.1), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+
+            // Messages
+            if chatId == nil {
+                Spacer()
+                ProgressView().tint(Color.neonCyan)
+                Spacer()
+            } else if chatMessages.isEmpty {
+                Spacer()
+                VStack(spacing: 10) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 34))
+                        .foregroundStyle(Color.white.opacity(0.12))
+                    Text("No messages yet")
+                        .font(.body(13))
+                        .foregroundStyle(Color.white.opacity(0.3))
+                    Text("Start the conversation below")
+                        .font(.body(12))
+                        .foregroundStyle(Color.white.opacity(0.2))
+                }
+                Spacer()
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(chatMessages) { msg in
+                                ChatBubbleView(msg: msg, clientColorIndex: client.colorIndex)
+                            }
+                            Color.clear.frame(height: 1).id("chatBottom")
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+                        .padding(.bottom, 8)
+                    }
+                    .onChange(of: chatMessages.count) { _, _ in
+                        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("chatBottom") }
+                    }
+                    .onAppear { proxy.scrollTo("chatBottom") }
+                }
+            }
+
+            // Composer
+            HStack(spacing: 8) {
+                TextField("Message…", text: $messageText)
+                    .font(.body(14))
+                    .foregroundStyle(.white)
+                    .tint(Color.neonPink)
+                    .submitLabel(.send)
+                    .onSubmit { Task { await sendChat() } }
+
+                let hasText = !messageText.trimmingCharacters(in: .whitespaces).isEmpty
+                Button { Task { await sendChat() } } label: {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(hasText ? Color(hex: "1a0010") : Color.white.opacity(0.4))
+                        .frame(width: 34, height: 34)
+                        .background(
+                            Group {
+                                if hasText {
+                                    LinearGradient(
+                                        colors: [Color.neonPink, Color(hex: "e855a0")],
+                                        startPoint: .topLeading, endPoint: .bottomTrailing
+                                    )
+                                } else {
+                                    LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.08)],
+                                                   startPoint: .top, endPoint: .bottom)
+                                }
+                            }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .shadow(color: hasText ? Color.neonPink.opacity(0.4) : .clear, radius: 8)
+                        .animation(.easeInOut(duration: 0.18), value: hasText)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.leading, 14)
+            .padding(.trailing, 8)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.06))
+            .background(.ultraThinMaterial)
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.1), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func loadChat() async {
+        guard let currentUser = store.currentUser else { return }
+        isChatLoading = true
+        defer { isChatLoading = false }
+        do {
+            let session = try await APIClient.shared.fetchOrCreateChat(
+                traineeId: client.id,
+                trainerId: currentUser.id
+            )
+            chatId = session.id
+            let msgs = try await APIClient.shared.fetchChatMessages(chatId: session.id)
+            chatMessages = msgs.map { m in
+                ChatMessageItem(
+                    id: m.id,
+                    senderId: m.senderId,
+                    senderName: m.sender.name,
+                    text: m.content.text,
+                    createdAt: m.createdAt,
+                    isFromClient: m.senderId == client.id
+                )
+            }
+        } catch {
+            store.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    private func sendChat() async {
+        let text = messageText.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, let chatId else { return }
+        messageText = ""
+        do {
+            let msg = try await APIClient.shared.sendChatMessage(chatId: chatId, text: text)
+            chatMessages.append(ChatMessageItem(
+                id: msg.id,
+                senderId: msg.senderId,
+                senderName: msg.sender.name,
+                text: msg.content.text,
+                createdAt: msg.createdAt,
+                isFromClient: msg.senderId == client.id
+            ))
+        } catch {
+            store.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+}
+
+// MARK: - ChatBubbleView
+
+struct ChatBubbleView: View {
+    let msg: ChatMessageItem
+    let clientColorIndex: Int
+
+    private var col: AvatarColor { paletteColor(clientColorIndex) }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            if !msg.isFromClient {
+                ZStack {
+                    Circle()
+                        .fill(Color.neonPink.opacity(0.15))
+                        .overlay(Circle().stroke(Color.neonPink.opacity(0.4), lineWidth: 1.5))
+                    Text(String(msg.senderName.prefix(1)))
+                        .font(.display(10))
+                        .foregroundStyle(Color.neonPink)
+                }
+                .frame(width: 24, height: 24)
+            } else {
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: msg.isFromClient ? .trailing : .leading, spacing: 3) {
+                Text("\(msg.senderName) · \(msg.timeString)")
+                    .font(.mono(9))
+                    .foregroundStyle(Color.white.opacity(0.3))
+
+                Text(msg.text)
+                    .font(.body(13))
+                    .foregroundStyle(Color.white.opacity(0.88))
+                    .lineSpacing(3)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(msg.isFromClient ? col.bg : Color.neonPink.opacity(0.10))
+                    .overlay(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius:     msg.isFromClient ? 14 : 4,
+                            bottomLeadingRadius:  14,
+                            bottomTrailingRadius: 14,
+                            topTrailingRadius:    msg.isFromClient ? 4 : 14
+                        )
+                        .stroke(msg.isFromClient ? col.border : Color.neonPink.opacity(0.25), lineWidth: 1)
+                    )
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius:     msg.isFromClient ? 14 : 4,
+                            bottomLeadingRadius:  14,
+                            bottomTrailingRadius: 14,
+                            topTrailingRadius:    msg.isFromClient ? 4 : 14
+                        )
+                    )
+                    .frame(maxWidth: 270, alignment: msg.isFromClient ? .trailing : .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: msg.isFromClient ? .trailing : .leading)
+
+            if msg.isFromClient {
+                ZStack {
+                    Circle()
+                        .fill(col.bg)
+                        .overlay(Circle().stroke(col.border, lineWidth: 1.5))
+                    Text(String(msg.senderName.prefix(1)))
+                        .font(.display(10))
+                        .foregroundStyle(col.text)
+                }
+                .frame(width: 24, height: 24)
+            } else {
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

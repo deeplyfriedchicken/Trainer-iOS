@@ -128,6 +128,27 @@ final class APIClient {
         try await delete("/api/trainers/\(id)")
     }
 
+    func fetchOrCreateChat(traineeId: String, trainerId: String) async throws -> ChatSessionResponse {
+        let wrapper: DataWrapper<ChatSessionResponse> = try await post(
+            "/api/chats",
+            body: ["traineeId": traineeId, "trainerId": trainerId]
+        )
+        return wrapper.data
+    }
+
+    func fetchChatMessages(chatId: String) async throws -> [ChatMessageResponse] {
+        let wrapper: DataWrapper<[ChatMessageResponse]> = try await get("/api/chats/\(chatId)/messages")
+        return wrapper.data
+    }
+
+    func sendChatMessage(chatId: String, text: String) async throws -> ChatMessageResponse {
+        let wrapper: DataWrapper<ChatMessageResponse> = try await post(
+            "/api/chats/\(chatId)/messages",
+            body: ["text": text]
+        )
+        return wrapper.data
+    }
+
     func fetchVideos(limit: Int = 20, offset: Int = 0) async throws -> [VideoListItemResponse] {
         let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(
             "/api/videos?limit=\(limit)&offset=\(offset)&status=ready"
@@ -399,6 +420,30 @@ struct VideoTagEntryResponse: Decodable, Sendable {
         let name: String
     }
     let tag: TagInfo
+}
+
+// MARK: - Chat types
+
+struct ChatSessionResponse: Decodable, Sendable {
+    let id: String
+    let traineeId: String
+    let trainerId: String
+}
+
+struct ChatMessageResponse: Decodable, Identifiable, Sendable {
+    struct Sender: Decodable, Sendable {
+        let id: String
+        let name: String
+    }
+    struct Content: Decodable, Sendable {
+        let text: String
+    }
+    let id: String
+    let chatId: String
+    let senderId: String
+    let sender: Sender
+    let content: Content
+    let createdAt: Date?
 }
 
 // MARK: - Data helpers

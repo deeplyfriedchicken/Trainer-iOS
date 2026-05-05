@@ -71,6 +71,18 @@ struct RecordingView: View {
             .padding(.top, 70)
             .padding(.horizontal, 16)
 
+            // Tap-to-dismiss overlay when client picker is open
+            if showClientPicker {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            showClientPicker = false
+                        }
+                    }
+            }
+
             // HUD
             VStack {
                 HStack {

@@ -88,6 +88,24 @@ struct VideoFeedItem: Identifiable {
     var uploaderColorIndex: Int { abs(uploaderId.hashValue) % 5 }
 }
 
+// MARK: - Chat
+
+struct ChatMessageItem: Identifiable {
+    let id: String
+    let senderId: String
+    let senderName: String
+    let text: String
+    let createdAt: Date?
+    let isFromClient: Bool
+
+    var timeString: String {
+        guard let date = createdAt else { return "" }
+        let df = DateFormatter()
+        df.dateFormat = Calendar.current.isDateInToday(date) ? "h:mma" : "EEE h:mma"
+        return df.string(from: date)
+    }
+}
+
 // MARK: - Trainer
 
 struct Trainer: Identifiable {
