@@ -49,6 +49,45 @@ struct Exercise {
     var rest: String
 }
 
+// MARK: - Video Feed
+
+struct VideoFeedItem: Identifiable {
+    let id: String
+    let title: String
+    let fileURL: URL?
+    let durationSeconds: Int
+    let createdAt: Date?
+    let uploaderName: String
+    let uploaderId: String
+    let traineeId: String?
+    let traineeName: String?
+    let tags: [String]
+
+    var duration: String {
+        guard durationSeconds > 0 else { return "" }
+        return String(format: "%02d:%02d", durationSeconds / 60, durationSeconds % 60)
+    }
+
+    var dateString: String {
+        createdAt?.formatted(.dateTime.month(.abbreviated).day().year()) ?? ""
+    }
+
+    var traineeInitials: String? {
+        guard let name = traineeName, !name.isEmpty else { return nil }
+        let parts = name.components(separatedBy: " ")
+        return "\(parts.first?.prefix(1) ?? "")\(parts.dropFirst().first?.prefix(1) ?? "")"
+    }
+
+    var traineeColorIndex: Int { traineeId.map { abs($0.hashValue) % 5 } ?? 0 }
+
+    var uploaderInitials: String {
+        let parts = uploaderName.components(separatedBy: " ")
+        return "\(parts.first?.prefix(1) ?? "")\(parts.dropFirst().first?.prefix(1) ?? "")"
+    }
+
+    var uploaderColorIndex: Int { abs(uploaderId.hashValue) % 5 }
+}
+
 // MARK: - Trainer
 
 struct Trainer: Identifiable {

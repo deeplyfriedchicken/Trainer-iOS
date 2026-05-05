@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WebKit
 
 @Observable
 @MainActor
@@ -12,6 +13,11 @@ class AppStore {
     var isLoading: Bool = false
     var error: APIError? = nil
     var refreshMessage: String? = nil
+
+    var feedVideos: [VideoFeedItem] = []
+    var isFeedLoading: Bool = false
+    var feedHasMore: Bool = true
+    private let feedPageSize = 20
 
     private let api = APIClient.shared
 
@@ -35,6 +41,11 @@ class AppStore {
 
     func signOut() {
         KeychainStore.delete()
+        WKWebsiteDataStore.default().removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+            modifiedSince: .distantPast
+        ) { }
+        HTTPCookieStorage.shared.cookies?.forEach { HTTPCookieStorage.shared.deleteCookie($0) }
         clients = []
         trainers = []
         isAuthenticated = false
@@ -218,6 +229,34 @@ class AppStore {
     func clientCount(for trainerId: String) -> Int {
         clients.filter { $0.trainerId == trainerId }.count
     }
+
+    // MARK: - Video Feed
+
+    func loadFeedVideos() async {
+        guard !isFeedLoading else { return }
+        isFeedLoading = true
+        defer { isFeedLoading = false }
+        do {
+            let items = try await api.fetchVideos(limit: feedPageSize, offset: 0)
+            feedVideos = items.map { VideoFeedItem($0, clients: clients) }
+            feedHasMore = items.count == feedPageSize
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    func loadMoreFeedVideos() async {
+        guard !isFeedLoading && feedHasMore else { return }
+        isFeedLoading = true
+        defer { isFeedLoading = false }
+        do {
+            let items = try await api.fetchVideos(limit: feedPageSize, offset: feedVideos.count)
+            feedVideos.append(contentsOf: items.map { VideoFeedItem($0, clients: clients) })
+            feedHasMore = items.count == feedPageSize
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
 }
 
 // MARK: - API → Model conversions
@@ -259,6 +298,24 @@ extension Trainer {
             role: role,
             sessions: r.videoCount ?? 0,
             colorIndex: abs(r.id.hashValue) % 5
+        )
+    }
+}
+
+extension VideoFeedItem {
+    init(_ r: VideoListItemResponse, clients: [Client]) {
+        let client = clients.first(where: { $0.id == r.traineeId })
+        self.init(
+            id: r.id,
+            title: r.title ?? "Recording",
+            fileURL: r.fileUrl.flatMap(URL.init),
+            durationSeconds: r.durationSeconds ?? 0,
+            createdAt: r.createdAt,
+            uploaderName: r.uploader?.name ?? "Unknown",
+            uploaderId: r.uploader?.id ?? "",
+            traineeId: r.traineeId,
+            traineeName: client?.fullName,
+            tags: r.videoTags?.map(\.tag.name) ?? []
         )
     }
 }

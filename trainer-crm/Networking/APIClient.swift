@@ -128,6 +128,13 @@ final class APIClient {
         try await delete("/api/trainers/\(id)")
     }
 
+    func fetchVideos(limit: Int = 20, offset: Int = 0) async throws -> [VideoListItemResponse] {
+        let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(
+            "/api/videos?limit=\(limit)&offset=\(offset)&status=ready"
+        )
+        return wrapper.data
+    }
+
     func uploadVideo(fileURL: URL, title: String, traineeId: String) async throws -> VideoUploadResult {
         let mimeType = fileURL.pathExtension.lowercased() == "mp4" ? "video/mp4" : "video/quicktime"
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
@@ -366,6 +373,32 @@ struct VideoConfirmResponse: Decodable, Sendable {
 struct VideoUploadResult: Sendable {
     let videoId: String
     let fileUrl: String?
+}
+
+// MARK: - Video feed types
+
+struct VideoListItemResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let title: String?
+    let fileUrl: String?
+    let durationSeconds: Int?
+    let createdAt: Date?
+    let traineeId: String?
+    let uploader: VideoUploaderResponse?
+    let videoTags: [VideoTagEntryResponse]?
+}
+
+struct VideoUploaderResponse: Decodable, Sendable {
+    let id: String
+    let name: String
+}
+
+struct VideoTagEntryResponse: Decodable, Sendable {
+    struct TagInfo: Decodable, Sendable {
+        let id: String
+        let name: String
+    }
+    let tag: TagInfo
 }
 
 // MARK: - Data helpers

@@ -27,10 +27,10 @@ struct ContentView: View {
 
             // Tab content
             Group {
-                if selectedTab == .clients {
-                    ClientsView()
-                } else {
-                    TrainersView()
+                switch selectedTab {
+                case .clients:  ClientsView()
+                case .videos:   VideosView()
+                case .trainers: TrainersView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -87,7 +87,7 @@ struct ContentView: View {
 
 // MARK: - Tab Bar
 
-enum AppTab { case clients, trainers }
+enum AppTab { case clients, videos, trainers }
 
 struct AppTabBar: View {
     @Binding var selected: AppTab
@@ -98,8 +98,9 @@ struct AppTabBar: View {
                 .fill(Color.white.opacity(0.10))
                 .frame(height: 1)
             HStack(spacing: 0) {
-                TabBarItem(icon: "person.2.fill", label: "Clients",   tab: .clients,  selected: $selected)
-                TabBarItem(icon: "star.fill",     label: "Trainers",  tab: .trainers, selected: $selected)
+                TabBarItem(icon: "person.2.fill",      label: "Clients",  tab: .clients,  selected: $selected)
+                TabBarItem(icon: "play.rectangle.fill", label: "Videos",   tab: .videos,   selected: $selected)
+                TabBarItem(icon: "star.fill",           label: "Trainers", tab: .trainers, selected: $selected)
             }
             .padding(.horizontal, 10)
             .padding(.top, 10)
