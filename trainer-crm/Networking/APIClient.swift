@@ -351,9 +351,17 @@ struct WorkoutPlanNestedResponse: Decodable, Sendable {
     let occurredAt: Date?
 }
 
+struct ExerciseSetLogResponse: Decodable, Sendable {
+    let reps: Int?
+    let durationSeconds: Int?
+    let weightLbs: Double?
+    let completed: Bool
+}
+
 struct WorkoutExerciseLinkResponse: Decodable, Sendable {
     let exerciseId: String
     let exercise: WorkoutExerciseNestedResponse?
+    let setsData: [ExerciseSetLogResponse]?
 }
 
 struct WorkoutExerciseNestedResponse: Decodable, Sendable {

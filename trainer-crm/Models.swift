@@ -71,6 +71,7 @@ struct Exercise: Identifiable {
     var durationSeconds: Int? = nil
     var comment: String = ""
     var videoIds: [String] = []
+    var setsData: [ExerciseSetLog] = []
 
     var displaySets: String {
         switch exerciseType {
@@ -78,6 +79,13 @@ struct Exercise: Identifiable {
         case .duration: return "\(sets)×\(durationSeconds ?? 0)s"
         }
     }
+}
+
+struct ExerciseSetLog {
+    var reps: Int?
+    var durationSeconds: Int?
+    var weightLbs: Double?
+    var completed: Bool
 }
 
 // MARK: - Video Feed

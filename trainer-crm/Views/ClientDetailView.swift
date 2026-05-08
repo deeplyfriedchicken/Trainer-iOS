@@ -1328,22 +1328,68 @@ struct WorkoutSessionCard: View {
             )
 
             ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
-                let isLast = i == workout.exercises.count - 1
-                HStack(spacing: 12) {
-                    Text("\(i + 1)")
-                        .font(.display(13))
-                        .foregroundStyle(Color.neonCyan)
-                        .frame(width: 28, height: 28)
-                        .background(Color.neonCyan.opacity(0.10))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.neonCyan.opacity(0.18), lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
-                        Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                let isLast = i == workout.exercises.count - 1 && (workout.comment?.isEmpty != false)
+                VStack(spacing: 0) {
+                    // Exercise header row
+                    HStack(spacing: 12) {
+                        Text("\(i + 1)")
+                            .font(.display(13))
+                            .foregroundStyle(Color.neonCyan)
+                            .frame(width: 28, height: 28)
+                            .background(Color.neonCyan.opacity(0.10))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.neonCyan.opacity(0.18), lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
+                            Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+
+                    // Per-set rows
+                    if !ex.setsData.isEmpty {
+                        VStack(spacing: 0) {
+                            ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
+                                let isDur = s.durationSeconds != nil
+                                HStack(spacing: 0) {
+                                    Text("SET \(j + 1)")
+                                        .font(.mono(10))
+                                        .foregroundStyle(Color.white.opacity(0.35))
+                                        .frame(width: 52, alignment: .leading)
+                                    HStack(spacing: 2) {
+                                        Text(isDur ? "\(s.durationSeconds ?? 0)" : "\(s.reps ?? 0)")
+                                            .font(.mono(12, weight: .semibold))
+                                            .foregroundStyle(s.completed ? .white : Color.white.opacity(0.35))
+                                        Text(isDur ? "SEC" : "REPS")
+                                            .font(.mono(9))
+                                            .foregroundStyle(Color.white.opacity(0.3))
+                                    }
+                                    Spacer()
+                                    if let w = s.weightLbs, w > 0 {
+                                        Text(w.truncatingRemainder(dividingBy: 1) == 0
+                                             ? "\(Int(w)) lbs"
+                                             : String(format: "%.1f lbs", w))
+                                            .font(.mono(11))
+                                            .foregroundStyle(Color.white.opacity(0.45))
+                                    } else {
+                                        Text("—")
+                                            .font(.mono(11))
+                                            .foregroundStyle(Color.white.opacity(0.2))
+                                    }
+                                    Image(systemName: s.completed ? "checkmark" : "xmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(s.completed ? Color.neonGreen : Color.neonRed.opacity(0.7))
+                                        .frame(width: 24, alignment: .trailing)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(Color.white.opacity(j % 2 == 0 ? 0.02 : 0.0))
+                            }
+                        }
+                        .padding(.bottom, 4)
+                    }
                 }
-                .padding(.horizontal, 14).padding(.vertical, 12)
                 .background(Color.white.opacity(0.03))
                 .overlay(
                     UnevenRoundedRectangle(

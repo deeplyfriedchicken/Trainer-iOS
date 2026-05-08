@@ -266,6 +266,8 @@ struct ToastNotification: View {
     var style: Style = .error
     let onDismiss: () -> Void
 
+    @State private var dragOffset: CGFloat = 0
+
     private var accentColor: Color { style == .error ? .neonRed : .neonGreen }
     private var icon: String { style == .error ? "wifi.slash" : "checkmark.circle.fill" }
 
@@ -298,6 +300,22 @@ struct ToastNotification: View {
         )
         .shadow(color: accentColor.opacity(0.2), radius: 16)
         .padding(.horizontal, 16)
+        .offset(y: min(dragOffset, 0))
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if value.translation.height < 0 {
+                        dragOffset = value.translation.height
+                    }
+                }
+                .onEnded { value in
+                    if value.translation.height < -40 {
+                        onDismiss()
+                    } else {
+                        withAnimation(.spring()) { dragOffset = 0 }
+                    }
+                }
+        )
     }
 }
 
