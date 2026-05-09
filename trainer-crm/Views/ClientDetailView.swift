@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import PhotosUI
 
 struct ClientDetailView: View {
     @Environment(AppStore.self) private var store
@@ -32,6 +33,11 @@ struct ClientDetailView: View {
     @State private var isChatRefreshing = false
     @State private var showChatRefreshToast = false
     @State private var messageText = ""
+    @State private var showPhotoPicker = false
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    @State private var selectedExercisePhotoItem: PhotosPickerItem? = nil
+    @State private var isUploadingExerciseVideo = false
+    @State private var uploadingVideoLocalId: String? = nil
 
     enum DetailTab: String, CaseIterable {
         case overview, workouts, workoutPlans, videos, chat
@@ -89,6 +95,48 @@ struct ClientDetailView: View {
         .fullScreenCover(isPresented: $showVideoGallery) {
             VideoGalleryView(videos: galleryVideos)
         }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .videos)
+        .onChange(of: selectedPhotoItem) { _, item in
+            guard let item else { return }
+            Task {
+                defer { selectedPhotoItem = nil }
+                guard let videoFile = try? await item.loadTransferable(type: VideoFile.self) else { return }
+                let video = ClientVideo(
+                    title: "Upload \(Date.now.formatted(.dateTime.month(.abbreviated).day()))",
+                    date: Date.now.formatted(.dateTime.month().day().year()),
+                    duration: "—",
+                    url: videoFile.url
+                )
+                client.videos.insert(video, at: 0)
+                uploadBanner = video
+                _ = try? await store.addVideo(clientId: client.id, video: video)
+            }
+        }
+        .onChange(of: selectedExercisePhotoItem) { _, item in
+            guard let item else { return }
+            isUploadingExerciseVideo = true
+            Task {
+                defer {
+                    isUploadingExerciseVideo = false
+                    uploadingVideoLocalId = nil
+                    selectedExercisePhotoItem = nil
+                }
+                guard let videoFile = try? await item.loadTransferable(type: VideoFile.self) else { return }
+                let video = ClientVideo(
+                    title: "Upload \(Date.now.formatted(.dateTime.month(.abbreviated).day()))",
+                    date: Date.now.formatted(.dateTime.month().day().year()),
+                    duration: "—",
+                    url: videoFile.url
+                )
+                client.videos.insert(video, at: 0)
+                uploadingVideoLocalId = video.id
+                guard let serverVideoId = try? await store.addVideo(clientId: client.id, video: video) else {
+                    client.videos.removeAll { $0.id == video.id }
+                    return
+                }
+                editExVideoIds.insert(serverVideoId)
+            }
+        }
     }
 
     // MARK: - Main Content
@@ -133,9 +181,34 @@ struct ClientDetailView: View {
 
                 Spacer()
 
-                PillButton(title: "Record", icon: "video.fill", style: .cyan) {
-                    showRecording = true
+                Menu {
+                    Button {
+                        showPhotoPicker = true
+                    } label: {
+                        Label("From Photos", systemImage: "photo.on.rectangle.angled")
+                    }
+                    Button {
+                        showRecording = true
+                    } label: {
+                        Label("Record", systemImage: "video.fill")
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "video.badge.plus")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Upload")
+                            .font(.system(size: 13, weight: .semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(Color.neonCyan.opacity(0.15))
+                    .foregroundStyle(Color.neonCyan)
+                    .overlay(Capsule().stroke(Color.neonCyan.opacity(0.35), lineWidth: 1))
+                    .clipShape(Capsule())
+                    .shadow(color: Color.neonCyan.opacity(0.15), radius: 8, x: 0, y: 4)
                 }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 14)
@@ -388,6 +461,10 @@ struct ClientDetailView: View {
               let wi = client.workoutPlans.firstIndex(where: { $0.id == workoutId }),
               !editExName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
 
+        let originalIds = Set(editingExercise?.videoIds ?? [])
+        let confirmedVideoIds = editExVideoIds.filter { id in
+            originalIds.contains(id) || !id.contains("-")
+        }
         let updated = Exercise(
             id: editingExercise?.id ?? UUID().uuidString,
             name: editExName.trimmingCharacters(in: .whitespaces),
@@ -396,7 +473,7 @@ struct ClientDetailView: View {
             reps: editExType == .reps ? (Int(editExReps) ?? 10) : nil,
             durationSeconds: editExType == .duration ? (Int(editExDuration) ?? 30) : nil,
             comment: editExNotes,
-            videoIds: Array(editExVideoIds)
+            videoIds: Array(confirmedVideoIds)
         )
 
         if let editingId = editingExercise?.id,
@@ -455,25 +532,45 @@ struct ClientDetailView: View {
                         FormField(label: "Notes", text: $editExNotes, placeholder: "Optional notes")
 
                         // Video picker
-                        if !client.videos.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
                                 Text("LINKED VIDEOS")
                                     .font(.mono(11, weight: .bold))
                                     .foregroundStyle(Color.white.opacity(0.4))
                                     .textCase(.uppercase)
                                     .tracking(0.8)
-                                    .padding(.horizontal, 20)
-
-                                ForEach(client.videos) { video in
-                                    VideoPickerRow(
-                                        video: video,
-                                        isSelected: editExVideoIds.contains(video.id)
-                                    ) {
-                                        if editExVideoIds.contains(video.id) { editExVideoIds.remove(video.id) }
-                                        else { editExVideoIds.insert(video.id) }
+                                Spacer()
+                                if isUploadingExerciseVideo {
+                                    ProgressView()
+                                        .tint(.neonCyan)
+                                        .scaleEffect(0.75)
+                                } else {
+                                    PhotosPicker(selection: $selectedExercisePhotoItem, matching: .videos) {
+                                        Label("Upload", systemImage: "photo.on.rectangle.angled")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(Color.neonCyan)
                                     }
-                                    .padding(.horizontal, 16)
                                 }
+                            }
+                            .padding(.horizontal, 20)
+
+                            if client.videos.isEmpty && !isUploadingExerciseVideo {
+                                Text("No videos yet. Upload one above.")
+                                    .font(.body(12))
+                                    .foregroundStyle(Color.white.opacity(0.3))
+                                    .padding(.horizontal, 20)
+                            }
+
+                            ForEach(client.videos) { video in
+                                VideoPickerRow(
+                                    video: video,
+                                    isSelected: editExVideoIds.contains(video.id),
+                                    isUploading: video.id == uploadingVideoLocalId
+                                ) {
+                                    if editExVideoIds.contains(video.id) { editExVideoIds.remove(video.id) }
+                                    else { editExVideoIds.insert(video.id) }
+                                }
+                                .padding(.horizontal, 16)
                             }
                         }
 
@@ -1213,17 +1310,22 @@ struct VideoGalleryView: View {
 struct VideoPickerRow: View {
     let video: ClientVideo
     let isSelected: Bool
+    var isUploading: Bool = false
     let onToggle: () -> Void
 
     @State private var thumbnail: UIImage? = nil
 
     var body: some View {
-        Button(action: onToggle) {
+        Button(action: { if !isUploading { onToggle() } }) {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.06))
-                    if let thumb = thumbnail {
+                        .fill(isUploading ? Color.neonCyan.opacity(0.08) : Color.white.opacity(0.06))
+                    if isUploading {
+                        ProgressView()
+                            .tint(Color.neonCyan)
+                            .scaleEffect(0.75)
+                    } else if let thumb = thumbnail {
                         Image(uiImage: thumb)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
@@ -1233,7 +1335,7 @@ struct VideoPickerRow: View {
                             .font(.system(size: 13))
                             .foregroundStyle(Color.white.opacity(0.2))
                     }
-                    if isSelected {
+                    if isSelected && !isUploading {
                         RoundedRectangle(cornerRadius: 8)
                             .fill(Color.neonPink.opacity(0.25))
                     }
@@ -1241,37 +1343,41 @@ struct VideoPickerRow: View {
                 .frame(width: 76, height: 46)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(
-                    isSelected ? Color.neonPink.opacity(0.45) : Color.white.opacity(0.10),
+                    isUploading ? Color.neonCyan.opacity(0.25) : (isSelected ? Color.neonPink.opacity(0.45) : Color.white.opacity(0.10)),
                     lineWidth: 1))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(video.title)
                         .font(.body(13, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(isUploading ? Color.white.opacity(0.5) : .white)
                         .lineLimit(1)
-                    if !video.date.isEmpty {
-                        Text(video.date)
-                            .font(.mono(10))
-                            .foregroundStyle(Color.white.opacity(0.4))
-                    }
+                    Text(isUploading ? "Uploading…" : video.date)
+                        .font(.mono(10))
+                        .foregroundStyle(isUploading ? Color.neonCyan.opacity(0.7) : Color.white.opacity(0.4))
                 }
 
                 Spacer()
 
-                if !video.duration.isEmpty {
-                    Text(video.duration)
-                        .font(.mono(10))
-                        .foregroundStyle(Color.white.opacity(0.4))
+                if isUploading {
+                    ProgressView()
+                        .tint(Color.neonCyan)
+                        .scaleEffect(0.7)
+                        .frame(width: 20)
+                } else {
+                    if !video.duration.isEmpty {
+                        Text(video.duration)
+                            .font(.mono(10))
+                            .foregroundStyle(Color.white.opacity(0.4))
+                    }
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(isSelected ? Color.neonPink : Color.white.opacity(0.25))
                 }
-
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 18))
-                    .foregroundStyle(isSelected ? Color.neonPink : Color.white.opacity(0.25))
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(isSelected ? Color.neonPink.opacity(0.07) : Color.white.opacity(0.04))
+            .background(isUploading ? Color.neonCyan.opacity(0.04) : (isSelected ? Color.neonPink.opacity(0.07) : Color.white.opacity(0.04)))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(
-                isSelected ? Color.neonPink.opacity(0.25) : Color.white.opacity(0.08),
+                isUploading ? Color.neonCyan.opacity(0.15) : (isSelected ? Color.neonPink.opacity(0.25) : Color.white.opacity(0.08)),
                 lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
@@ -1452,5 +1558,19 @@ struct CopyProfileButton: View {
             .animation(.easeInOut(duration: 0.15), value: copied)
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct VideoFile: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { v in
+            SentTransferredFile(v.url)
+        } importing: { received in
+            let dest = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".mov")
+            try FileManager.default.copyItem(at: received.file, to: dest)
+            return VideoFile(url: dest)
+        }
     }
 }

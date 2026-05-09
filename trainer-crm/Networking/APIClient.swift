@@ -355,7 +355,7 @@ struct ExerciseSetLogResponse: Decodable, Sendable {
     let reps: Int?
     let durationSeconds: Int?
     let weightLbs: Double?
-    let completed: Bool
+    let completed: Bool?
 }
 
 struct WorkoutExerciseLinkResponse: Decodable, Sendable {

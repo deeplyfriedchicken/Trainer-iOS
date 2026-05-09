@@ -156,7 +156,7 @@ class AppStore {
                         videoIds: [],
                         setsData: (link.setsData ?? []).map {
                             ExerciseSetLog(reps: $0.reps, durationSeconds: $0.durationSeconds,
-                                           weightLbs: $0.weightLbs, completed: $0.completed)
+                                           weightLbs: $0.weightLbs, completed: $0.completed ?? false)
                         }
                     )
                 }
