@@ -42,7 +42,21 @@ final class APIClient {
     private let session = URLSession.shared
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        d.dateDecodingStrategy = .custom { decoder in
+            let c = try decoder.singleValueContainer()
+            let s = try c.decode(String.self)
+            let withMs = ISO8601DateFormatter()
+            withMs.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = withMs.date(from: s) { return date }
+            let withoutMs = ISO8601DateFormatter()
+            withoutMs.formatOptions = [.withInternetDateTime]
+            if let date = withoutMs.date(from: s) { return date }
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Invalid ISO 8601 date: \(s)"
+            ))
+        }
         return d
     }()
     private let encoder = JSONEncoder()
@@ -122,10 +136,10 @@ final class APIClient {
         try await delete("/api/trainers/\(id)")
     }
 
-    func fetchOrCreateChat(traineeId: String, trainerId: String) async throws -> ChatSessionResponse {
+    func fetchOrCreateChat(traineeId: String) async throws -> ChatSessionResponse {
         let wrapper: DataWrapper<ChatSessionResponse> = try await post(
             "/api/chats",
-            body: ["traineeId": traineeId, "trainerId": trainerId]
+            body: ["traineeId": traineeId]
         )
         return wrapper.data
     }
@@ -167,6 +181,15 @@ final class APIClient {
         let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(
             "/api/videos?limit=\(limit)&offset=\(offset)&status=ready"
         )
+        return wrapper.data
+    }
+
+    func softDeleteVideo(id: String) async throws {
+        try await delete("/api/videos/\(id)")
+    }
+
+    func fetchPortalLink(traineeId: String) async throws -> PortalLinkResponse {
+        let wrapper: DataWrapper<PortalLinkResponse> = try await get("/api/trainees/\(traineeId)/portal-link")
         return wrapper.data
     }
 
@@ -478,12 +501,16 @@ struct VideoTagEntryResponse: Decodable, Sendable {
     let tag: TagInfo
 }
 
+struct PortalLinkResponse: Decodable, Sendable {
+    let url: String
+    let expiresAt: Date
+}
+
 // MARK: - Chat types
 
 struct ChatSessionResponse: Decodable, Sendable {
     let id: String
     let traineeId: String
-    let trainerId: String
 }
 
 struct ChatMessageResponse: Decodable, Identifiable, Sendable {

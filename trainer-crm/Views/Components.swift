@@ -113,6 +113,8 @@ struct TagChip: View {
 
     var body: some View {
         Text(label)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .font(.mono(11, weight: .semibold))
             .foregroundStyle(color)
             .padding(.horizontal, 10).padding(.vertical, 4)

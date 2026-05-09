@@ -27,7 +27,7 @@ struct TrainersView: View {
 
             List {
                 ForEach(store.trainers) { trainer in
-                    TrainerCard(trainer: trainer, clientCount: store.clientCount(for: trainer.id))
+                    TrainerCard(trainer: trainer)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets())
@@ -81,7 +81,6 @@ struct TrainersView: View {
 
 struct TrainerCard: View {
     let trainer: Trainer
-    let clientCount: Int
 
     private var roleColor: Color { trainer.role == .trainerManager ? .neonPink : trainer.role == .admin ? .neonGreen : .neonCyan }
 
@@ -97,29 +96,6 @@ struct TrainerCard: View {
             }
 
             Spacer()
-
-            HStack(spacing: 14) {
-                VStack(spacing: 1) {
-                    Text("\(clientCount)")
-                        .font(.display(18))
-                        .foregroundStyle(.white)
-                    Text("Clients")
-                        .font(.mono(9))
-                        .foregroundStyle(Color.white.opacity(0.3))
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                }
-                VStack(spacing: 1) {
-                    Text("\(trainer.sessions)")
-                        .font(.display(18))
-                        .foregroundStyle(.white)
-                    Text("Sessions")
-                        .font(.mono(9))
-                        .foregroundStyle(Color.white.opacity(0.3))
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                }
-            }
         }
         .padding(16)
         .background(Color.white.opacity(0.05))

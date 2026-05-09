@@ -23,7 +23,7 @@ struct ClientDetailView: View {
     @State private var newWorkoutName = ""
     @State private var uploadBanner: ClientVideo? = nil
     @State private var playerItem: AVPlayerItem? = nil
-    @State private var playerURL: URL? = nil
+    @State private var playingVideo: ClientVideo? = nil
     @State private var galleryVideos: [ClientVideo] = []
     @State private var showVideoGallery = false
     @State private var exerciseRecordTarget: (workoutId: String, exerciseId: String)? = nil
@@ -38,6 +38,16 @@ struct ClientDetailView: View {
     @State private var selectedExercisePhotoItem: PhotosPickerItem? = nil
     @State private var isUploadingExerciseVideo = false
     @State private var uploadingVideoLocalId: String? = nil
+    @State private var pendingVideoFile: VideoFile? = nil
+    @State private var pendingVideoIsExercise = false
+    @State private var videoNameInput = ""
+    @State private var showVideoNameSheet = false
+    @State private var videoToDelete: ClientVideo? = nil
+
+    private var canDeleteVideos: Bool {
+        guard let roles = store.currentUser?.roles else { return false }
+        return roles.contains("admin") || roles.contains("trainer_admin")
+    }
 
     enum DetailTab: String, CaseIterable {
         case overview, workouts, workoutPlans, videos, chat
@@ -91,7 +101,11 @@ struct ClientDetailView: View {
         }
         .sheet(isPresented: $showEditExercise) { editExerciseSheet }
         .sheet(isPresented: $showAddWorkout) { addWorkoutSheet }
-        .fullScreenCover(item: $playerURL) { url in VideoPlayerView(url: url) }
+        .fullScreenCover(item: $playingVideo) { video in
+            VideoPlayerView(video: video, canDelete: canDeleteVideos) {
+                videoToDelete = video
+            }
+        }
         .fullScreenCover(isPresented: $showVideoGallery) {
             VideoGalleryView(videos: galleryVideos)
         }
@@ -101,41 +115,38 @@ struct ClientDetailView: View {
             Task {
                 defer { selectedPhotoItem = nil }
                 guard let videoFile = try? await item.loadTransferable(type: VideoFile.self) else { return }
-                let video = ClientVideo(
-                    title: "Upload \(Date.now.formatted(.dateTime.month(.abbreviated).day()))",
-                    date: Date.now.formatted(.dateTime.month().day().year()),
-                    duration: "—",
-                    url: videoFile.url
-                )
-                client.videos.insert(video, at: 0)
-                uploadBanner = video
-                _ = try? await store.addVideo(clientId: client.id, video: video)
+                pendingVideoFile = videoFile
+                pendingVideoIsExercise = false
+                videoNameInput = Date.now.formatted(.dateTime.month(.abbreviated).day())
+                showVideoNameSheet = true
             }
         }
         .onChange(of: selectedExercisePhotoItem) { _, item in
             guard let item else { return }
-            isUploadingExerciseVideo = true
             Task {
-                defer {
-                    isUploadingExerciseVideo = false
-                    uploadingVideoLocalId = nil
-                    selectedExercisePhotoItem = nil
-                }
+                defer { selectedExercisePhotoItem = nil }
                 guard let videoFile = try? await item.loadTransferable(type: VideoFile.self) else { return }
-                let video = ClientVideo(
-                    title: "Upload \(Date.now.formatted(.dateTime.month(.abbreviated).day()))",
-                    date: Date.now.formatted(.dateTime.month().day().year()),
-                    duration: "—",
-                    url: videoFile.url
-                )
-                client.videos.insert(video, at: 0)
-                uploadingVideoLocalId = video.id
-                guard let serverVideoId = try? await store.addVideo(clientId: client.id, video: video) else {
-                    client.videos.removeAll { $0.id == video.id }
-                    return
-                }
-                editExVideoIds.insert(serverVideoId)
+                pendingVideoFile = videoFile
+                pendingVideoIsExercise = true
+                let datePart = Date.now.formatted(.dateTime.month(.abbreviated).day())
+                let exercisePart = editExName.trimmingCharacters(in: .whitespaces)
+                videoNameInput = exercisePart.isEmpty ? datePart : "\(exercisePart) \(datePart)"
+                showVideoNameSheet = true
             }
+        }
+        .sheet(isPresented: $showVideoNameSheet) { videoNameSheet }
+        .alert("Delete Video?", isPresented: Binding(
+            get: { videoToDelete != nil },
+            set: { if !$0 { videoToDelete = nil } }
+        ), presenting: videoToDelete) { v in
+            Button("Delete", role: .destructive) {
+                let toDelete = v
+                videoToDelete = nil
+                Task { await store.deleteVideo(id: toDelete.id, clientId: client.id) }
+            }
+            Button("Cancel", role: .cancel) { videoToDelete = nil }
+        } message: { v in
+            Text("Remove \"\(v.title)\"? This cannot be undone.")
         }
     }
 
@@ -193,15 +204,13 @@ struct ClientDetailView: View {
                         Label("Record", systemImage: "video.fill")
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 4) {
                         Image(systemName: "video.badge.plus")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("Upload")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 14, weight: .semibold))
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(Color.neonCyan.opacity(0.15))
                     .foregroundStyle(Color.neonCyan)
                     .overlay(Capsule().stroke(Color.neonCyan.opacity(0.35), lineWidth: 1))
@@ -227,26 +236,28 @@ struct ClientDetailView: View {
             .padding(.bottom, 14)
 
             // Tabs
-            HStack(spacing: 6) {
-                ForEach(DetailTab.allCases, id: \.self) { tab in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { activeTab = tab }
-                    } label: {
-                        Text(tab.displayName)
-                            .font(.body(12, weight: .semibold))
-                            .foregroundStyle(activeTab == tab ? Color.neonPink : Color.white.opacity(0.5))
-                            .padding(.horizontal, 14).padding(.vertical, 6)
-                            .background(activeTab == tab ? Color.neonPink.opacity(0.15) : Color.white.opacity(0.06))
-                            .overlay(Capsule().stroke(
-                                activeTab == tab ? Color.neonPink.opacity(0.30) : Color.white.opacity(0.09),
-                                lineWidth: 1))
-                            .clipShape(Capsule())
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(DetailTab.allCases, id: \.self) { tab in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { activeTab = tab }
+                        } label: {
+                            Text(tab.displayName)
+                                .lineLimit(1)
+                                .font(.body(12, weight: .semibold))
+                                .foregroundStyle(activeTab == tab ? Color.neonPink : Color.white.opacity(0.5))
+                                .padding(.horizontal, 14).padding(.vertical, 6)
+                                .background(activeTab == tab ? Color.neonPink.opacity(0.15) : Color.white.opacity(0.06))
+                                .overlay(Capsule().stroke(
+                                    activeTab == tab ? Color.neonPink.opacity(0.30) : Color.white.opacity(0.09),
+                                    lineWidth: 1))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
-                Spacer()
+                .padding(.horizontal, 20)
             }
-            .padding(.horizontal, 20)
             .padding(.bottom, 12)
 
             // Tab Content
@@ -262,7 +273,7 @@ struct ClientDetailView: View {
                     case .chat:         EmptyView()
                     }
                 }
-                .refreshable { await store.loadClientDetail(client.id) }
+                .refreshable { await store.loadClientDetail(client.id, showRefreshToast: true) }
             }
         }
     }
@@ -318,7 +329,7 @@ struct ClientDetailView: View {
                     .padding(.vertical, 20)
             } else if let v = client.videos.first {
                 VideoThumb(video: v) {
-                    if let url = v.url { playerURL = url }
+                    playingVideo = v
                 }
                 .padding(.horizontal, 16).padding(.bottom, 10)
             }
@@ -432,8 +443,24 @@ struct ClientDetailView: View {
                 .padding(.horizontal, 16)
             } else {
                 ForEach(client.videos) { v in
-                    VideoThumb(video: v, showPlanTag: true) {
-                        if let url = v.url { playerURL = url }
+                    ZStack(alignment: .topTrailing) {
+                        VideoThumb(video: v, showPlanTag: true) {
+                            playingVideo = v
+                        }
+                        if canDeleteVideos {
+                            Button {
+                                videoToDelete = v
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(7)
+                                    .background(Color.black.opacity(0.6))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .padding(8)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .padding(.horizontal, 16).padding(.bottom, 10)
                 }
@@ -725,7 +752,7 @@ struct ClientDetailView: View {
             }
 
             // Messages
-            if chatId == nil {
+            if chatId == nil || isChatLoading {
                 Spacer()
                 ProgressView().tint(Color.neonCyan)
                 Spacer()
@@ -828,10 +855,7 @@ struct ClientDetailView: View {
         isChatLoading = true
         defer { isChatLoading = false }
         do {
-            let session = try await APIClient.shared.fetchOrCreateChat(
-                traineeId: client.id,
-                trainerId: currentUser.id
-            )
+            let session = try await APIClient.shared.fetchOrCreateChat(traineeId: client.id)
             chatId = session.id
             let msgs = try await APIClient.shared.fetchChatMessages(chatId: session.id)
             chatMessages = msgs.map { m in
@@ -865,6 +889,89 @@ struct ClientDetailView: View {
             ))
         } catch {
             store.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    // MARK: - Video Name Sheet
+
+    private var videoNameSheet: some View {
+        NavigationStack {
+            ZStack {
+                Color(hex: "0c0c1c").ignoresSafeArea()
+                VStack(spacing: 24) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("VIDEO NAME")
+                            .font(.mono(11, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.4))
+                            .tracking(0.8)
+                        TextField("", text: $videoNameInput)
+                            .font(.body(15))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14).padding(.vertical, 12)
+                            .background(Color.white.opacity(0.06))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .autocorrectionDisabled()
+                    }
+                    .padding(.horizontal, 20)
+
+                    PillButton(title: "Upload", icon: "arrow.up.circle.fill") {
+                        showVideoNameSheet = false
+                        Task { await confirmVideoUpload() }
+                    }
+                    .padding(.horizontal, 20)
+
+                    Spacer()
+                }
+                .padding(.top, 24)
+            }
+            .navigationTitle("Name Your Video")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color(hex: "0c0c1c"), for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showVideoNameSheet = false
+                        pendingVideoFile = nil
+                    }
+                    .foregroundStyle(Color.neonPink)
+                }
+            }
+        }
+        .presentationDetents([.height(240)])
+        .presentationBackground(Color(hex: "0c0c1c"))
+    }
+
+    private func confirmVideoUpload() async {
+        guard let videoFile = pendingVideoFile else { return }
+        defer { pendingVideoFile = nil }
+        let title = videoNameInput.trimmingCharacters(in: .whitespaces).isEmpty
+            ? Date.now.formatted(.dateTime.month(.abbreviated).day())
+            : videoNameInput.trimmingCharacters(in: .whitespaces)
+        let video = ClientVideo(
+            title: title,
+            date: Date.now.formatted(.dateTime.month().day().year()),
+            duration: "—",
+            url: videoFile.url
+        )
+        if pendingVideoIsExercise {
+            isUploadingExerciseVideo = true
+            client.videos.insert(video, at: 0)
+            uploadingVideoLocalId = video.id
+            defer {
+                isUploadingExerciseVideo = false
+                uploadingVideoLocalId = nil
+            }
+            guard let serverVideoId = try? await store.addVideo(clientId: client.id, video: video) else {
+                client.videos.removeAll { $0.id == video.id }
+                return
+            }
+            editExVideoIds.insert(serverVideoId)
+        } else {
+            client.videos.insert(video, at: 0)
+            uploadBanner = video
+            _ = try? await store.addVideo(clientId: client.id, video: video)
         }
     }
 }
@@ -1210,29 +1317,57 @@ struct VideoThumb: View {
 // MARK: - Video Player
 
 struct VideoPlayerView: View {
-    let url: URL
+    let video: ClientVideo
+    var canDelete: Bool = false
+    var onDelete: (() -> Void)? = nil
+
     @Environment(\.dismiss) private var dismiss
+    @State private var showDeleteConfirm = false
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            VideoPlayer(player: AVPlayer(url: url))
-                .ignoresSafeArea()
-            Button(action: { dismiss() }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(.white)
-                    .shadow(radius: 4)
+        ZStack(alignment: .top) {
+            if let url = video.url {
+                VideoPlayer(player: AVPlayer(url: url))
+                    .ignoresSafeArea()
+            } else {
+                Color.black.ignoresSafeArea()
             }
-            .buttonStyle(.plain)
+
+            HStack {
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.white)
+                        .shadow(radius: 4)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                if canDelete {
+                    Button { showDeleteConfirm = true } label: {
+                        Image(systemName: "trash.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(Color.neonRed)
+                            .shadow(radius: 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
             .padding(.top, 60)
-            .padding(.leading, 20)
+            .padding(.horizontal, 20)
         }
         .background(.black)
+        .alert("Delete Video?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                dismiss()
+                onDelete?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Remove \"\(video.title)\"? This cannot be undone.")
+        }
     }
-}
-
-extension URL: @retroactive Identifiable {
-    public var id: String { absoluteString }
 }
 
 // MARK: - VideoGalleryView
@@ -1531,33 +1666,45 @@ struct WorkoutSessionCard: View {
 
 struct CopyProfileButton: View {
     let clientId: String
-    @State private var copied = false
+    @State private var state: CopyState = .idle
+
+    enum CopyState { case idle, loading, copied, failed }
 
     var body: some View {
         Button {
-            guard let url = clientPortalURL(for: clientId) else { return }
-            UIPasteboard.general.string = url
-            withAnimation(.easeInOut(duration: 0.15)) { copied = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                withAnimation(.easeInOut(duration: 0.15)) { copied = false }
+            guard state != .loading else { return }
+            state = .loading
+            Task {
+                do {
+                    let result = try await APIClient.shared.fetchPortalLink(traineeId: clientId)
+                    UIPasteboard.general.string = Config.apiBaseURL + result.url
+                    withAnimation { state = .copied }
+                    try? await Task.sleep(for: .seconds(2))
+                    withAnimation { state = .idle }
+                } catch {
+                    withAnimation { state = .failed }
+                    try? await Task.sleep(for: .seconds(2))
+                    withAnimation { state = .idle }
+                }
             }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: copied ? "checkmark" : "link")
+                Image(systemName: state == .copied ? "checkmark" : "link")
                     .font(.system(size: 11, weight: .semibold))
-                Text(copied ? "Copied!" : "Copy Profile")
+                Text(state == .copied ? "Copied!" : state == .failed ? "Failed" : state == .loading ? "Generating…" : "Copy Profile")
                     .font(.mono(11))
             }
-            .foregroundStyle(copied ? Color.neonCyan : Color.white.opacity(0.55))
+            .foregroundStyle(state == .copied ? Color.neonCyan : state == .failed ? Color.neonRed : Color.white.opacity(0.55))
             .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(copied ? Color.neonCyan.opacity(0.12) : Color.white.opacity(0.06))
+            .background(state == .copied ? Color.neonCyan.opacity(0.12) : Color.white.opacity(0.06))
             .overlay(Capsule().stroke(
-                copied ? Color.neonCyan.opacity(0.30) : Color.white.opacity(0.10),
+                state == .copied ? Color.neonCyan.opacity(0.30) : Color.white.opacity(0.10),
                 lineWidth: 1))
             .clipShape(Capsule())
-            .animation(.easeInOut(duration: 0.15), value: copied)
+            .animation(.easeInOut(duration: 0.15), value: state)
         }
         .buttonStyle(.plain)
+        .disabled(state == .loading)
     }
 }
 

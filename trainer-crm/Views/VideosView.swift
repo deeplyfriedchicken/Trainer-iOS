@@ -53,7 +53,7 @@ struct VideosView: View {
                         ProgressView().tint(Color.neonCyan).padding(.vertical, 16)
                     }
                 }
-                .refreshable { await store.loadFeedVideos() }
+                .refreshable { await Task { await store.loadFeedVideos() }.value }
             }
         }
         .task {
@@ -174,18 +174,41 @@ struct VideoFeedCell: View {
 
 struct VideoDetailSheet: View {
     let item: VideoFeedItem
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer? = nil
+    @State private var showDeleteConfirm = false
+
+    private var canDelete: Bool {
+        guard let roles = store.currentUser?.roles else { return false }
+        return roles.contains("admin") || roles.contains("trainer_admin")
+    }
 
     var body: some View {
         ZStack {
             Color(hex: "0c0c1c").ignoresSafeArea()
 
             VStack(spacing: 0) {
-                Capsule()
-                    .fill(Color.white.opacity(0.2))
-                    .frame(width: 36, height: 4)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
+                ZStack {
+                    Capsule()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(width: 36, height: 4)
+                    if canDelete {
+                        HStack {
+                            Spacer()
+                            Button { showDeleteConfirm = true } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(Color.neonRed)
+                                    .padding(8)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.top, 12)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 4)
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -261,6 +284,17 @@ struct VideoDetailSheet: View {
         .onDisappear {
             player?.pause()
             player = nil
+        }
+        .alert("Delete Video?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    await store.deleteVideo(id: item.id)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Remove \"\(item.title)\"? This cannot be undone.")
         }
     }
 

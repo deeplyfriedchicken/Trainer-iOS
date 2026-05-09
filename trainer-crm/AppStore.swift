@@ -108,7 +108,7 @@ class AppStore {
         }
     }
 
-    func loadClientDetail(_ clientId: String) async {
+    func loadClientDetail(_ clientId: String, showRefreshToast: Bool = false) async {
         let detail: TraineeDetailResponse
         do {
             detail = try await api.fetchTrainee(id: clientId)
@@ -208,7 +208,7 @@ class AppStore {
         let combined = directVideos + linkedVideos + workoutLinkedVideos + localOnly
         var seen = Set<String>()
         clients[idx].videos = combined.filter { seen.insert($0.id).inserted }
-        refreshMessage = "Client data refreshed"
+        if showRefreshToast { refreshMessage = "Client data refreshed" }
     }
 
     @discardableResult
@@ -225,6 +225,18 @@ class AppStore {
         clients[cidx].videos[vidx].id = uploaded.videoId
         clients[cidx].videos[vidx].url = uploaded.fileUrl.flatMap(URL.init)
         return uploaded.videoId
+    }
+
+    func deleteVideo(id: String, clientId: String? = nil) async {
+        feedVideos.removeAll { $0.id == id }
+        if let clientId, let cidx = clients.firstIndex(where: { $0.id == clientId }) {
+            clients[cidx].videos.removeAll { $0.id == id }
+        }
+        do {
+            try await api.softDeleteVideo(id: id)
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
     }
 
     func createWorkoutPlan(clientId: String, name: String) async {
@@ -333,8 +345,12 @@ class AppStore {
             let items = try await api.fetchVideos(limit: feedPageSize, offset: 0)
             feedVideos = items.map { VideoFeedItem($0, clients: clients) }
             feedHasMore = items.count == feedPageSize
+        } catch is CancellationError {
+        } catch let apiError as APIError {
+            if case .networkError(let e) = apiError, (e as? URLError)?.code == .cancelled { return }
+            self.error = apiError
         } catch {
-            self.error = (error as? APIError) ?? .networkError(error)
+            self.error = .networkError(error)
         }
     }
 
