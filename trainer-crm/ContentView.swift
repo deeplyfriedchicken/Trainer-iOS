@@ -8,7 +8,7 @@ struct ContentView: View {
     @State private var toastTask: Task<Void, Never>? = nil
 
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack(alignment: .top) {
             Color.appBg.ignoresSafeArea()
 
             // Ambient glow
@@ -26,18 +26,11 @@ struct ContentView: View {
             }
 
             // Tab content
-            Group {
-                switch selectedTab {
-                case .clients:  ClientsView()
-                case .videos:   VideosView()
-                case .trainers: TrainersView()
-                }
+            switch selectedTab {
+            case .clients:  ClientsView()
+            case .videos:   VideosView()
+            case .trainers: TrainersView()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.bottom, 84)
-
-            // Custom tab bar
-            AppTabBar(selected: $selectedTab)
 
             // Toast notifications
             VStack(spacing: 0) {
@@ -51,7 +44,9 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(toastMessage != nil)
         }
-        .ignoresSafeArea(edges: .bottom)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            AppTabBar(selected: $selectedTab)
+        }
         .onChange(of: store.error) { _, error in
             guard let error else { return }
             showToast(error.errorDescription ?? "Network error", style: .error)
@@ -103,10 +98,10 @@ struct AppTabBar: View {
                 TabBarItem(icon: "star.fill",           label: "Trainers", tab: .trainers, selected: $selected)
             }
             .padding(.horizontal, 10)
-            .padding(.top, 10)
-            .frame(height: 83)
-            .background(.ultraThinMaterial)
+            .padding(.top, 5)
+            .frame(height: 75)
         }
+        .background(.ultraThinMaterial, ignoresSafeAreaEdges: .bottom)
     }
 }
 

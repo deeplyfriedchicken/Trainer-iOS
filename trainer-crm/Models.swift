@@ -64,6 +64,7 @@ enum ExerciseType: String, CaseIterable {
 
 struct Exercise: Identifiable {
     var id: String = UUID().uuidString
+    var serverId: String? = nil
     var name: String
     var exerciseType: ExerciseType = .reps
     var sets: Int = 3

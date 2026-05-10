@@ -125,6 +125,7 @@ class AppStore {
                 exercises: (plan.exercises ?? []).map { ex in
                     Exercise(
                         id: ex.id,
+                        serverId: ex.id,
                         name: ex.name,
                         exerciseType: ex.type == "duration" ? .duration : .reps,
                         sets: ex.sets ?? 1,
@@ -271,6 +272,7 @@ class AppStore {
     func updateWorkoutPlan(planId: String, clientId: String, name: String, exercises: [Exercise]) async {
         let payload = exercises.map { ex in
             ExercisePayload(
+                id: ex.serverId,
                 name: ex.name,
                 type: ex.exerciseType.rawValue,
                 sets: ex.sets,

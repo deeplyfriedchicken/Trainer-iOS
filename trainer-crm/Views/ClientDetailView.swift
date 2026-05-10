@@ -33,6 +33,7 @@ struct ClientDetailView: View {
     @State private var isChatRefreshing = false
     @State private var showChatRefreshToast = false
     @State private var messageText = ""
+    @FocusState private var isChatFocused: Bool
     @State private var showPhotoPicker = false
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var selectedExercisePhotoItem: PhotosPickerItem? = nil
@@ -177,111 +178,116 @@ struct ClientDetailView: View {
 
     private var mainContent: some View {
         VStack(spacing: 0) {
-            // Back
-            HStack {
-                Button(action: onBack) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("Clients")
-                            .font(.body(14, weight: .semibold))
+            if !(isChatFocused && activeTab == .chat) {
+                VStack(spacing: 0) {
+                    // Back
+                    HStack {
+                        Button(action: onBack) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("Clients")
+                                    .font(.body(14, weight: .semibold))
+                            }
+                            .foregroundStyle(Color.neonPink)
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
                     }
-                    .foregroundStyle(Color.neonPink)
-                }
-                .buttonStyle(.plain)
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 4)
-            .padding(.bottom, 8)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
 
-            // Profile Hero
-            HStack(spacing: 16) {
-                AvatarView(initials: client.initials, colorIndex: client.colorIndex, size: 70, cornerRadius: 22)
+                    // Profile Hero
+                    HStack(spacing: 16) {
+                        AvatarView(initials: client.initials, colorIndex: client.colorIndex, size: 70, cornerRadius: 22)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(client.fullName)
-                        .font(.display(24))
-                        .foregroundStyle(.white)
-                    Text(client.plan)
-                        .font(.body(12))
-                        .foregroundStyle(Color.white.opacity(0.4))
-                    HStack(spacing: 6) {
-                        TagChip(label: client.status.rawValue.capitalized,
-                                color: client.status == .active ? .neonGreen : .neonOrange)
-                        TagChip(label: "\(client.sessions) sessions")
-                    }
-                }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(client.fullName)
+                                .font(.display(24))
+                                .foregroundStyle(.white)
+                            Text(client.plan)
+                                .font(.body(12))
+                                .foregroundStyle(Color.white.opacity(0.4))
+                            HStack(spacing: 6) {
+                                TagChip(label: client.status.rawValue.capitalized,
+                                        color: client.status == .active ? .neonGreen : .neonOrange)
+                                TagChip(label: "\(client.sessions) sessions")
+                            }
+                        }
 
-                Spacer()
+                        Spacer()
 
-                Menu {
-                    Button {
-                        showPhotoPicker = true
-                    } label: {
-                        Label("From Photos", systemImage: "photo.on.rectangle.angled")
-                    }
-                    Button {
-                        showRecording = true
-                    } label: {
-                        Label("Record", systemImage: "video.fill")
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "video.badge.plus")
-                            .font(.system(size: 14, weight: .semibold))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.neonCyan.opacity(0.15))
-                    .foregroundStyle(Color.neonCyan)
-                    .overlay(Capsule().stroke(Color.neonCyan.opacity(0.35), lineWidth: 1))
-                    .clipShape(Capsule())
-                    .shadow(color: Color.neonCyan.opacity(0.15), radius: 8, x: 0, y: 4)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 14)
-
-            // Stats row
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    StatPill(value: "\(client.sessions)", label: "Sessions")
-                    StatPill(value: "\(client.workoutPlans.count)", label: "Plans")
-                    StatPill(value: "\(client.videos.count)", label: "Videos")
-                    StatPill(value: client.lastSeen, label: "Last workout")
-                    CopyProfileButton(clientId: client.id)
-                }
-                .padding(.horizontal, 20)
-            }
-            .padding(.bottom, 14)
-
-            // Tabs
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(DetailTab.allCases, id: \.self) { tab in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { activeTab = tab }
+                        Menu {
+                            Button {
+                                showPhotoPicker = true
+                            } label: {
+                                Label("From Photos", systemImage: "photo.on.rectangle.angled")
+                            }
+                            Button {
+                                showRecording = true
+                            } label: {
+                                Label("Record", systemImage: "video.fill")
+                            }
                         } label: {
-                            Text(tab.displayName)
-                                .lineLimit(1)
-                                .font(.body(12, weight: .semibold))
-                                .foregroundStyle(activeTab == tab ? Color.neonPink : Color.white.opacity(0.5))
-                                .padding(.horizontal, 14).padding(.vertical, 6)
-                                .background(activeTab == tab ? Color.neonPink.opacity(0.15) : Color.white.opacity(0.06))
-                                .overlay(Capsule().stroke(
-                                    activeTab == tab ? Color.neonPink.opacity(0.30) : Color.white.opacity(0.09),
-                                    lineWidth: 1))
-                                .clipShape(Capsule())
+                            HStack(spacing: 4) {
+                                Image(systemName: "video.badge.plus")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .semibold))
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Color.neonCyan.opacity(0.15))
+                            .foregroundStyle(Color.neonCyan)
+                            .overlay(Capsule().stroke(Color.neonCyan.opacity(0.35), lineWidth: 1))
+                            .clipShape(Capsule())
+                            .shadow(color: Color.neonCyan.opacity(0.15), radius: 8, x: 0, y: 4)
                         }
                         .buttonStyle(.plain)
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 14)
+
+                    // Stats row
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            StatPill(value: "\(client.sessions)", label: "Sessions")
+                            StatPill(value: "\(client.workoutPlans.count)", label: "Plans")
+                            StatPill(value: "\(client.videos.count)", label: "Videos")
+                            StatPill(value: client.lastSeen, label: "Last workout")
+                            CopyProfileButton(clientId: client.id)
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.bottom, 14)
+
+                    // Tabs
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(DetailTab.allCases, id: \.self) { tab in
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) { activeTab = tab }
+                                } label: {
+                                    Text(tab.displayName)
+                                        .lineLimit(1)
+                                        .font(.body(12, weight: .semibold))
+                                        .foregroundStyle(activeTab == tab ? Color.neonPink : Color.white.opacity(0.5))
+                                        .padding(.horizontal, 14).padding(.vertical, 6)
+                                        .background(activeTab == tab ? Color.neonPink.opacity(0.15) : Color.white.opacity(0.06))
+                                        .overlay(Capsule().stroke(
+                                            activeTab == tab ? Color.neonPink.opacity(0.30) : Color.white.opacity(0.09),
+                                            lineWidth: 1))
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.bottom, 12)
                 }
-                .padding(.horizontal, 20)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
-            .padding(.bottom, 12)
 
             // Tab Content
             if activeTab == .chat {
@@ -299,6 +305,7 @@ struct ClientDetailView: View {
                 .refreshable { await store.loadClientDetail(client.id, showRefreshToast: true) }
             }
         }
+        .animation(.easeInOut(duration: 0.25), value: isChatFocused && activeTab == .chat)
     }
 
     // MARK: - Overview Tab
@@ -497,6 +504,7 @@ struct ClientDetailView: View {
         }
         let updated = Exercise(
             id: editingExercise?.id ?? UUID().uuidString,
+            serverId: editingExercise?.serverId,
             name: editExName.trimmingCharacters(in: .whitespaces),
             exerciseType: editExType,
             sets: Int(editExSets) ?? 3,
@@ -528,7 +536,7 @@ struct ClientDetailView: View {
     private var editExerciseSheet: some View {
         DarkSheet(title: editingExercise == nil ? "Add Exercise" : "Edit Exercise", detents: [.large]) {
             VStack(spacing: 16) {
-                        FormField(label: "Exercise Name", text: $editExName, placeholder: "e.g. Bench Press")
+                        FormField(label: "Exercise Name", text: $editExName, placeholder: "e.g. Bench Press", clearable: true)
 
                         // Type toggle
                         VStack(alignment: .leading, spacing: 6) {
@@ -624,7 +632,7 @@ struct ClientDetailView: View {
     private var addWorkoutSheet: some View {
         DarkSheet(title: "New Workout Plan") {
             VStack(spacing: 16) {
-                FormField(label: "Plan Name", text: $newWorkoutName, placeholder: "e.g. Upper Body A")
+                FormField(label: "Plan Name", text: $newWorkoutName, placeholder: "e.g. Upper Body A", clearable: true)
                 HStack(spacing: 10) {
                     PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
                         showAddWorkout = false
@@ -758,6 +766,7 @@ struct ClientDetailView: View {
                     .foregroundStyle(.white)
                     .tint(Color.neonPink)
                     .submitLabel(.send)
+                    .focused($isChatFocused)
                     .onSubmit { Task { await sendChat() } }
 
                 let hasText = !messageText.trimmingCharacters(in: .whitespaces).isEmpty
@@ -812,7 +821,7 @@ struct ClientDetailView: View {
     }
 
     private func loadChat() async {
-        guard let currentUser = store.currentUser else { return }
+        guard store.currentUser != nil else { return }
         isChatLoading = true
         defer { isChatLoading = false }
         do {
@@ -861,7 +870,7 @@ struct ClientDetailView: View {
             pendingVideoFile = nil
         }) {
             VStack(spacing: 24) {
-                FormField(label: "Video Name", text: $videoNameInput, placeholder: "")
+                FormField(label: "Video Name", text: $videoNameInput, placeholder: "", clearable: true)
                 PillButton(title: "Upload", icon: "arrow.up.circle.fill") {
                     showVideoNameSheet = false
                     Task { await confirmVideoUpload() }
@@ -1099,7 +1108,7 @@ struct WorkoutPlanCard: View {
         .sheet(isPresented: $showRenameSheet) {
             DarkSheet(title: "Rename Plan") {
                 VStack(spacing: 16) {
-                    FormField(label: "Plan Name", text: $renameText, placeholder: "e.g. Upper Body A")
+                    FormField(label: "Plan Name", text: $renameText, placeholder: "e.g. Upper Body A", clearable: true)
                     HStack(spacing: 10) {
                         PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
                             showRenameSheet = false

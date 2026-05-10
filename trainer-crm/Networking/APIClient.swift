@@ -457,6 +457,7 @@ struct LinkedVideoResponse: Decodable, Sendable {
 }
 
 struct ExercisePayload: Encodable, Sendable {
+    let id: String?
     let name: String
     let type: String
     let sets: Int
@@ -464,6 +465,22 @@ struct ExercisePayload: Encodable, Sendable {
     let durationSeconds: Int?
     let comment: String?
     let videoIds: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, type, sets, reps, durationSeconds, comment, videoIds
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let id { try container.encode(id, forKey: .id) }
+        try container.encode(name, forKey: .name)
+        try container.encode(type, forKey: .type)
+        try container.encode(sets, forKey: .sets)
+        try container.encodeIfPresent(reps, forKey: .reps)
+        try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
+        try container.encodeIfPresent(comment, forKey: .comment)
+        try container.encodeIfPresent(videoIds, forKey: .videoIds)
+    }
 }
 
 struct WorkoutPlanCreateBody: Encodable, Sendable {
