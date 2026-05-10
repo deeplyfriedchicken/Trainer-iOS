@@ -1,4 +1,20 @@
 import SwiftUI
+import AVFoundation
+
+// MARK: - Thumbnail generation
+
+func generateThumbnail(from url: URL, size: CGSize) async -> UIImage? {
+    let asset = AVURLAsset(url: url)
+    let generator = AVAssetImageGenerator(asset: asset)
+    generator.appliesPreferredTrackTransform = true
+    generator.maximumSize = size
+    do {
+        let (cgImage, _) = try await generator.image(at: .zero)
+        return UIImage(cgImage: cgImage)
+    } catch {
+        return nil
+    }
+}
 
 // MARK: - Avatar
 
@@ -184,6 +200,11 @@ struct FormField: View {
     let label: String
     @Binding var text: String
     var placeholder: String = ""
+    var keyboardType: UIKeyboardType = .default
+    var multiline: Bool = false
+    var clearable: Bool = false
+
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -192,70 +213,205 @@ struct FormField: View {
                 .foregroundStyle(Color.white.opacity(0.4))
                 .textCase(.uppercase)
                 .tracking(0.8)
-            TextField(placeholder, text: $text)
-                .font(.body(14))
-                .foregroundStyle(.white)
-                .tint(.neonPink)
+            if multiline {
+                TextEditor(text: $text)
+                    .font(.body(14))
+                    .foregroundStyle(.white)
+                    .tint(.neonPink)
+                    .frame(minHeight: 70)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(Color.white.opacity(0.06))
+                    .scrollContentBackground(.hidden)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                HStack(spacing: 0) {
+                    TextField(placeholder, text: $text)
+                        .font(.body(14))
+                        .foregroundStyle(.white)
+                        .tint(.neonPink)
+                        .keyboardType(keyboardType)
+                        .focused($isFocused)
+                    if clearable && !text.isEmpty {
+                        Button {
+                            text = ""
+                            isFocused = true
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Color.white.opacity(0.3))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 4)
+                    }
+                }
                 .padding(.horizontal, 14).padding(.vertical, 11)
                 .background(Color.white.opacity(0.06))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
         }
         .padding(.horizontal, 20)
     }
 }
 
-// MARK: - Bottom Sheet
+// MARK: - Dark Sheet
 
-struct BottomSheet<Content: View>: View {
-    @Binding var isPresented: Bool
+struct DarkSheet<Content: View>: View {
     let title: String
+    var detents: Set<PresentationDetent> = [.medium]
+    var cancelAction: (() -> Void)? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color.black.opacity(0.6)
-                .ignoresSafeArea()
-                .onTapGesture { isPresented = false }
-
-            VStack(spacing: 0) {
-                // Handle
-                Capsule()
-                    .fill(Color.white.opacity(0.2))
-                    .frame(width: 36, height: 4)
-                    .padding(.top, 12)
-                    .padding(.bottom, 18)
-
-                // Title
-                HStack {
-                    Text(title)
-                        .font(.display(22))
-                        .foregroundStyle(.white)
-                    Spacer()
-                    IconButton(systemImage: "xmark") { isPresented = false }
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 16)
-                Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1)
-
+        NavigationStack {
+            ZStack {
+                Color.appBg.ignoresSafeArea()
                 ScrollView {
                     content
-                        .padding(.top, 16)
+                        .padding(.top, 24)
+                        .padding(.bottom, 40)
                 }
-                .frame(maxHeight: 480)
-
-                Spacer(minLength: 0)
             }
-            .padding(.bottom, 34)
-            .background(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1))
-            )
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color.appBg, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                if let cancel = cancelAction {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel", action: cancel)
+                            .foregroundStyle(Color.neonPink)
+                    }
+                }
+            }
         }
-        .ignoresSafeArea()
+        .presentationDetents(detents)
+        .presentationBackground(Color(hex: "0c0c1c"))
+    }
+}
+
+// MARK: - Empty State View
+
+struct EmptyStateView: View {
+    let systemImage: String
+    let title: String
+    var subtitle: String? = nil
+    var bordered: Bool = false
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 32))
+                .foregroundStyle(Color.white.opacity(0.2))
+            Text(title)
+                .font(.body(13))
+                .foregroundStyle(Color.white.opacity(0.3))
+            if let subtitle {
+                Text(subtitle)
+                    .font(.body(12))
+                    .foregroundStyle(Color.white.opacity(0.2))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+        .background(bordered ? Color.white.opacity(0.03) : Color.clear)
+        .overlay(borderOverlay)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    @ViewBuilder
+    private var borderOverlay: some View {
+        if bordered {
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [6]))
+                .foregroundStyle(Color.white.opacity(0.10))
+        }
+    }
+}
+
+// MARK: - Number Badge
+
+struct NumberBadge: View {
+    let number: Int
+    var color: Color = .neonPink
+
+    var body: some View {
+        Text("\(number)")
+            .font(.display(13))
+            .foregroundStyle(color)
+            .frame(width: 28, height: 28)
+            .background(color.opacity(0.12))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.20), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - Sign Out Button
+
+struct SignOutButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "rectangle.portrait.and.arrow.right")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.neonRed)
+                .frame(width: 46, height: 46)
+                .background(Color.neonRed.opacity(0.12))
+                .overlay(Circle().stroke(Color.neonRed.opacity(0.30), lineWidth: 1))
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.3), radius: 8)
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 20)
+        .padding(.bottom, 20)
+    }
+}
+
+// MARK: - Delete Confirm Sheet
+
+struct DeleteConfirmSheet: View {
+    var title: String = "Remove?"
+    let message: String
+    let onDelete: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.appBg.ignoresSafeArea()
+            VStack(spacing: 16) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(Color.neonRed.opacity(0.10))
+                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.neonRed.opacity(0.25), lineWidth: 1))
+                    Image(systemName: "trash")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Color.neonRed)
+                }
+                .frame(width: 56, height: 56)
+                .padding(.top, 16)
+
+                Text(title)
+                    .font(.display(22))
+                    .foregroundStyle(.white)
+
+                Text(message)
+                    .font(.body(13))
+                    .foregroundStyle(Color.white.opacity(0.4))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+
+                HStack(spacing: 10) {
+                    PillButton(title: "Cancel", style: .secondary, fullWidth: true, action: onCancel)
+                    PillButton(title: "Delete", style: .danger, fullWidth: true, action: onDelete)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+            }
+        }
+        .presentationDetents([.height(280)])
+        .presentationBackground(Color(hex: "0c0c1c"))
     }
 }
 
@@ -330,5 +486,54 @@ struct StatusDot: View {
             .fill(status == .active ? Color.neonGreen : Color.white.opacity(0.2))
             .frame(width: 8, height: 8)
             .shadow(color: status == .active ? Color.neonGreen.opacity(0.8) : .clear, radius: 4)
+    }
+}
+
+// MARK: - Vid Pill
+
+struct VidPill: View {
+    enum Style {
+        case cyan
+        case neutral
+        case dot(color: Color)
+    }
+
+    let label: String
+    var icon: String? = nil
+    var style: Style = .neutral
+
+    private var fg: Color {
+        if case .cyan = style { return .neonCyan }
+        return Color.white.opacity(0.8)
+    }
+    private var bg: Color {
+        if case .cyan = style { return Color.neonCyan.opacity(0.10) }
+        return Color.white.opacity(0.06)
+    }
+    private var border: Color {
+        if case .cyan = style { return Color.neonCyan.opacity(0.30) }
+        return Color.white.opacity(0.10)
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if case .dot(let color) = style {
+                Circle()
+                    .fill(color)
+                    .shadow(color: color, radius: 3)
+                    .frame(width: 6, height: 6)
+            } else if let icon {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(fg)
+            }
+            Text(label)
+                .font(.mono(11, weight: .bold))
+                .foregroundStyle(fg)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(bg)
+        .overlay(Capsule().stroke(border, lineWidth: 1))
+        .clipShape(Capsule())
     }
 }

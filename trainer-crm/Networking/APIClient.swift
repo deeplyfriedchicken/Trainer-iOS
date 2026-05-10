@@ -75,6 +75,10 @@ final class APIClient {
         try await request(method: "PATCH", path: path, bodyData: try encoder.encode(body))
     }
 
+    func put<B: Encodable, T: Decodable>(_ path: String, body: B) async throws -> T {
+        try await request(method: "PUT", path: path, bodyData: try encoder.encode(body))
+    }
+
     func delete(_ path: String) async throws {
         let _: EmptyResponse = try await request(method: "DELETE", path: path)
     }
@@ -184,6 +188,18 @@ final class APIClient {
         return wrapper.data
     }
 
+    func editVideoMetadata(id: String, title: String, description: String?, tagIds: [String]?) async throws {
+        struct Body: Encodable {
+            let title: String
+            let description: String?
+            let tagIds: [String]?
+        }
+        let _: DataWrapper<VideoConfirmResponse> = try await patch(
+            "/api/videos/\(id)",
+            body: Body(title: title, description: description, tagIds: tagIds)
+        )
+    }
+
     func softDeleteVideo(id: String) async throws {
         try await delete("/api/videos/\(id)")
     }
@@ -221,11 +237,18 @@ final class APIClient {
             throw APIError.networkError(error)
         }
 
-        // Step 3: confirm upload → triggers MediaConvert (202 in prod, 200 in dev)
+        // Step 3: set title metadata
         let wrapper: DataWrapper<VideoConfirmResponse> = try await patch(
             "/api/videos/\(presign.videoId)",
             body: ["title": title]
         )
+
+        // Step 4: trigger MediaConvert transcode
+        let _: DataWrapper<VideoConfirmResponse> = try await post(
+            "/api/videos/\(presign.videoId)/process",
+            body: [String: String]()
+        )
+
         return VideoUploadResult(videoId: presign.videoId, fileUrl: wrapper.data.fileUrl)
     }
 
@@ -480,6 +503,7 @@ struct VideoUploadResult: Sendable {
 struct VideoListItemResponse: Decodable, Identifiable, Sendable {
     let id: String
     let title: String?
+    let description: String?
     let fileUrl: String?
     let durationSeconds: Int?
     let createdAt: Date?

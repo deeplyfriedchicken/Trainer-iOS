@@ -227,6 +227,25 @@ class AppStore {
         return uploaded.videoId
     }
 
+    func updateFeedVideo(id: String, title: String, description: String?, tagIds: [String]) async -> Bool {
+        if let idx = feedVideos.firstIndex(where: { $0.id == id }) {
+            feedVideos[idx].title = title
+            feedVideos[idx].description = description
+        }
+        do {
+            try await api.editVideoMetadata(
+                id: id,
+                title: title,
+                description: description,
+                tagIds: tagIds.isEmpty ? nil : tagIds
+            )
+            return true
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return false
+        }
+    }
+
     func deleteVideo(id: String, clientId: String? = nil) async {
         feedVideos.removeAll { $0.id == id }
         if let clientId, let cidx = clients.firstIndex(where: { $0.id == clientId }) {
@@ -425,7 +444,9 @@ extension VideoFeedItem {
             uploaderId: r.uploader?.id ?? "",
             traineeId: r.traineeId,
             traineeName: client?.fullName,
-            tags: r.videoTags?.map(\.tag.name) ?? []
+            tags: r.videoTags?.map(\.tag.name) ?? [],
+            tagIds: r.videoTags?.map(\.tag.id) ?? [],
+            description: r.description
         )
     }
 }

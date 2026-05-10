@@ -92,7 +92,7 @@ struct ExerciseSetLog {
 
 struct VideoFeedItem: Identifiable {
     let id: String
-    let title: String
+    var title: String
     let fileURL: URL?
     let durationSeconds: Int
     let createdAt: Date?
@@ -101,6 +101,8 @@ struct VideoFeedItem: Identifiable {
     let traineeId: String?
     let traineeName: String?
     let tags: [String]
+    let tagIds: [String]
+    var description: String?
 
     var duration: String {
         guard durationSeconds > 0 else { return "" }
@@ -125,6 +127,28 @@ struct VideoFeedItem: Identifiable {
     }
 
     var uploaderColorIndex: Int { abs(uploaderId.hashValue) % 5 }
+}
+
+extension VideoFeedItem {
+    init(from video: ClientVideo, clientId: String, clientName: String,
+         uploaderName: String, uploaderId: String) {
+        let parts = video.duration.split(separator: ":").compactMap { Int($0) }
+        let seconds = parts.count >= 2 ? parts[0] * 60 + parts[1] : 0
+        self.init(
+            id: video.id,
+            title: video.title,
+            fileURL: video.url,
+            durationSeconds: seconds,
+            createdAt: video.createdAt,
+            uploaderName: uploaderName,
+            uploaderId: uploaderId,
+            traineeId: clientId,
+            traineeName: clientName,
+            tags: [],
+            tagIds: [],
+            description: nil
+        )
+    }
 }
 
 // MARK: - Chat

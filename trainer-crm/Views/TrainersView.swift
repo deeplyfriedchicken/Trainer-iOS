@@ -48,19 +48,7 @@ struct TrainersView: View {
             .refreshable { await store.refreshData() }
         }
         .overlay(alignment: .bottomTrailing) {
-            Button { store.signOut() } label: {
-                Image(systemName: "rectangle.portrait.and.arrow.right")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.neonRed)
-                    .frame(width: 46, height: 46)
-                    .background(Color.neonRed.opacity(0.12))
-                    .overlay(Circle().stroke(Color.neonRed.opacity(0.30), lineWidth: 1))
-                    .clipShape(Circle())
-                    .shadow(color: .black.opacity(0.3), radius: 8)
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 20)
-            .padding(.bottom, 20)
+            SignOutButton { store.signOut() }
         }
         .sheet(isPresented: $showAdd) {
             TrainerFormSheet(mode: .add)
@@ -69,7 +57,10 @@ struct TrainersView: View {
             TrainerFormSheet(mode: .edit(trainer))
         }
         .sheet(item: $showDelete) { trainer in
-            DeleteTrainerSheet(name: trainer.fullName) {
+            DeleteConfirmSheet(
+                title: "Remove Trainer?",
+                message: "\(trainer.fullName) will be removed from the team."
+            ) {
                 showDelete = nil
                 store.deleteTrainer(id: trainer.id)
             } onCancel: { showDelete = nil }
@@ -141,56 +132,45 @@ struct TrainerFormSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.appBg.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 14) {
-                        HStack(spacing: 10) {
-                            FormField(label: "First Name", text: $firstName, placeholder: "First")
-                                .frame(maxWidth: .infinity)
-                            FormField(label: "Last Name", text: $lastName, placeholder: "Last")
-                                .frame(maxWidth: .infinity)
-                        }
-
-                        FormField(label: "Email", text: $email, placeholder: "trainer@example.com")
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Role")
-                                .font(.mono(11, weight: .bold))
-                                .foregroundStyle(Color.white.opacity(0.4))
-                                .textCase(.uppercase)
-                                .tracking(0.8)
-                            Picker("Role", selection: $role) {
-                                ForEach(TrainerRole.allCases.filter { $0 != .admin }, id: \.self) { r in
-                                    Text(r.displayName).tag(r)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .tint(.neonCyan)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14).padding(.vertical, 11)
-                            .background(Color.white.opacity(0.06))
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .padding(.horizontal, 20)
-
-                        HStack(spacing: 10) {
-                            PillButton(title: "Cancel", style: .secondary, fullWidth: true) { dismiss() }
-                            PillButton(title: isAdd ? "Add Trainer" : "Save Changes", style: .cyan, fullWidth: true) { save() }
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
-                    }
-                    .padding(.top, 24)
-                    .padding(.bottom, 40)
+        DarkSheet(title: isAdd ? "New Trainer" : "Edit Trainer") {
+            VStack(spacing: 14) {
+                HStack(spacing: 10) {
+                    FormField(label: "First Name", text: $firstName, placeholder: "First", clearable: true)
+                        .frame(maxWidth: .infinity)
+                    FormField(label: "Last Name", text: $lastName, placeholder: "Last", clearable: true)
+                        .frame(maxWidth: .infinity)
                 }
+
+                FormField(label: "Email", text: $email, placeholder: "trainer@example.com")
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Role")
+                        .font(.mono(11, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(0.4))
+                        .textCase(.uppercase)
+                        .tracking(0.8)
+                    Picker("Role", selection: $role) {
+                        ForEach(TrainerRole.allCases.filter { $0 != .admin }, id: \.self) { r in
+                            Text(r.displayName).tag(r)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(.neonCyan)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14).padding(.vertical, 11)
+                    .background(Color.white.opacity(0.06))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .padding(.horizontal, 20)
+
+                HStack(spacing: 10) {
+                    PillButton(title: "Cancel", style: .secondary, fullWidth: true) { dismiss() }
+                    PillButton(title: isAdd ? "Add Trainer" : "Save Changes", style: .cyan, fullWidth: true) { save() }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
             }
-            .navigationTitle(isAdd ? "New Trainer" : "Edit Trainer")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.appBg, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
     }
 
@@ -215,46 +195,3 @@ struct TrainerFormSheet: View {
     }
 }
 
-// MARK: - Delete Trainer Sheet
-
-struct DeleteTrainerSheet: View {
-    let name: String
-    let onDelete: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.appBg.ignoresSafeArea()
-            VStack(spacing: 16) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(Color.neonRed.opacity(0.10))
-                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.neonRed.opacity(0.25), lineWidth: 1))
-                    Image(systemName: "trash")
-                        .font(.system(size: 24))
-                        .foregroundStyle(Color.neonRed)
-                }
-                .frame(width: 56, height: 56)
-                .padding(.top, 16)
-
-                Text("Remove Trainer?")
-                    .font(.display(22))
-                    .foregroundStyle(.white)
-
-                Text("\(name) will be removed from the team.")
-                    .font(.body(13))
-                    .foregroundStyle(Color.white.opacity(0.4))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
-
-                HStack(spacing: 10) {
-                    PillButton(title: "Cancel", style: .secondary, fullWidth: true, action: onCancel)
-                    PillButton(title: "Delete", style: .danger, fullWidth: true, action: onDelete)
-                }
-                .padding(.horizontal, 20).padding(.top, 4)
-            }
-        }
-        .presentationDetents([.height(280)])
-        .presentationBackground(Color(hex: "0c0c1c"))
-    }
-}

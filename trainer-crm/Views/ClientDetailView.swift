@@ -43,6 +43,7 @@ struct ClientDetailView: View {
     @State private var videoNameInput = ""
     @State private var showVideoNameSheet = false
     @State private var videoToDelete: ClientVideo? = nil
+    @State private var selectedClientVideo: ClientVideo? = nil
 
     private var canDeleteVideos: Bool {
         guard let roles = store.currentUser?.roles else { return false }
@@ -64,8 +65,6 @@ struct ClientDetailView: View {
 
     var body: some View {
         ZStack {
-            Color.appBg.ignoresSafeArea()
-
             if showRecording || exerciseRecordTarget != nil {
                 RecordingView(client: client) { video, clientId in
                     if clientId == client.id {
@@ -90,6 +89,7 @@ struct ClientDetailView: View {
                 mainContent
             }
         }
+        .background(Color.appBg.ignoresSafeArea())
         .animation(.easeInOut(duration: 0.25), value: showRecording || exerciseRecordTarget != nil)
         .task(id: client.id) {
             await store.loadClientDetail(client.id)
@@ -135,6 +135,28 @@ struct ClientDetailView: View {
             }
         }
         .sheet(isPresented: $showVideoNameSheet) { videoNameSheet }
+        .sheet(item: $selectedClientVideo) { video in
+            let feedItem = VideoFeedItem(
+                from: video,
+                clientId: client.id,
+                clientName: client.fullName,
+                uploaderName: store.currentUser?.name ?? "",
+                uploaderId: store.currentUser?.id ?? ""
+            )
+            VideoDetailSheet(
+                item: feedItem,
+                onDelete: {
+                    client.videos.removeAll { $0.id == video.id }
+                    await store.deleteVideo(id: video.id, clientId: client.id)
+                },
+                onSaved: { newTitle, _ in
+                    if let idx = client.videos.firstIndex(where: { $0.id == video.id }) {
+                        client.videos[idx].title = newTitle
+                    }
+                }
+            )
+            .environment(store)
+        }
         .alert("Delete Video?", isPresented: Binding(
             get: { videoToDelete != nil },
             set: { if !$0 { videoToDelete = nil } }
@@ -142,6 +164,7 @@ struct ClientDetailView: View {
             Button("Delete", role: .destructive) {
                 let toDelete = v
                 videoToDelete = nil
+                client.videos.removeAll { $0.id == toDelete.id }
                 Task { await store.deleteVideo(id: toDelete.id, clientId: client.id) }
             }
             Button("Cancel", role: .cancel) { videoToDelete = nil }
@@ -346,15 +369,7 @@ struct ClientDetailView: View {
             SectionHeader(title: "Workouts (\(client.workouts.count))")
 
             if client.workouts.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "figure.run.circle")
-                        .font(.system(size: 32))
-                        .foregroundStyle(Color.white.opacity(0.2))
-                    Text("No workouts logged yet")
-                        .font(.body(13)).foregroundStyle(Color.white.opacity(0.3))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 40)
+                EmptyStateView(systemImage: "figure.run.circle", title: "No workouts logged yet")
             } else {
                 ForEach(client.workouts) { workout in
                     WorkoutSessionCard(workout: workout)
@@ -426,44 +441,32 @@ struct ClientDetailView: View {
                           actionLabel: "+ New")
 
             if client.videos.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "video.slash")
-                        .font(.system(size: 32))
-                        .foregroundStyle(Color.white.opacity(0.2))
-                    Text("No recordings yet")
-                        .font(.body(13)).foregroundStyle(Color.white.opacity(0.3))
-                    Text("Hit \"New\" to start a session")
-                        .font(.body(12)).foregroundStyle(Color.white.opacity(0.2))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 40)
-                .background(Color.white.opacity(0.03))
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(style: StrokeStyle(lineWidth: 1, dash: [6])).foregroundStyle(Color.white.opacity(0.10)))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
+                EmptyStateView(
+                    systemImage: "video.slash",
+                    title: "No recordings yet",
+                    subtitle: "Hit \"New\" to start a session",
+                    bordered: true
+                )
                 .padding(.horizontal, 16)
             } else {
-                ForEach(client.videos) { v in
-                    ZStack(alignment: .topTrailing) {
-                        VideoThumb(video: v, showPlanTag: true) {
-                            playingVideo = v
-                        }
-                        if canDeleteVideos {
-                            Button {
-                                videoToDelete = v
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .padding(7)
-                                    .background(Color.black.opacity(0.6))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    .padding(8)
-                            }
-                            .buttonStyle(.plain)
-                        }
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                    spacing: 8
+                ) {
+                    ForEach(client.videos) { v in
+                        let feedItem = VideoFeedItem(
+                            from: v,
+                            clientId: client.id,
+                            clientName: client.fullName,
+                            uploaderName: store.currentUser?.name ?? "",
+                            uploaderId: store.currentUser?.id ?? ""
+                        )
+                        VideoFeedCell(item: feedItem)
+                            .onTapGesture { selectedClientVideo = v }
                     }
-                    .padding(.horizontal, 16).padding(.bottom, 10)
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 16)
             }
         }
         .padding(.bottom, 16)
@@ -523,11 +526,8 @@ struct ClientDetailView: View {
     }
 
     private var editExerciseSheet: some View {
-        NavigationStack {
-            ZStack {
-                Color.appBg.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 16) {
+        DarkSheet(title: editingExercise == nil ? "Add Exercise" : "Edit Exercise", detents: [.large]) {
+            VStack(spacing: 16) {
                         FormField(label: "Exercise Name", text: $editExName, placeholder: "e.g. Bench Press")
 
                         // Type toggle
@@ -547,13 +547,13 @@ struct ClientDetailView: View {
                         .padding(.horizontal, 20)
 
                         // Sets
-                        numericField(label: "Sets", text: $editExSets, placeholder: "3")
+                        FormField(label: "Sets", text: $editExSets, placeholder: "3", keyboardType: .numberPad)
 
                         // Reps or Duration
                         if editExType == .reps {
-                            numericField(label: "Reps", text: $editExReps, placeholder: "10")
+                            FormField(label: "Reps", text: $editExReps, placeholder: "10", keyboardType: .numberPad)
                         } else {
-                            numericField(label: "Duration (seconds)", text: $editExDuration, placeholder: "30")
+                            FormField(label: "Duration (seconds)", text: $editExDuration, placeholder: "30", keyboardType: .numberPad)
                         }
 
                         FormField(label: "Notes", text: $editExNotes, placeholder: "Optional notes")
@@ -615,71 +615,31 @@ struct ClientDetailView: View {
                         }
                         .padding(.horizontal, 20)
                         .padding(.bottom, 24)
-                    }
-                    .padding(.top, 24)
-                }
             }
-            .navigationTitle(editingExercise == nil ? "Add Exercise" : "Edit Exercise")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.appBg, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
-        .presentationDetents([.large])
-        .presentationBackground(Color(hex: "0c0c1c"))
-    }
-
-    @ViewBuilder
-    private func numericField(label: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(.mono(11, weight: .bold))
-                .foregroundStyle(Color.white.opacity(0.4))
-                .textCase(.uppercase)
-                .tracking(0.8)
-            TextField(placeholder, text: text)
-                .font(.body(14))
-                .foregroundStyle(.white)
-                .tint(.neonPink)
-                .keyboardType(.numberPad)
-                .padding(.horizontal, 14).padding(.vertical, 11)
-                .background(Color.white.opacity(0.06))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-        .padding(.horizontal, 20)
     }
 
     // MARK: - Add Workout Sheet
 
     private var addWorkoutSheet: some View {
-        NavigationStack {
-            ZStack {
-                Color.appBg.ignoresSafeArea()
-                VStack(spacing: 16) {
-                    FormField(label: "Plan Name", text: $newWorkoutName, placeholder: "e.g. Upper Body A")
-                    HStack(spacing: 10) {
-                        PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
-                            showAddWorkout = false
-                        }
-                        PillButton(title: "Create Plan", style: .primary, fullWidth: true) {
-                            guard !newWorkoutName.isEmpty else { return }
-                            let name = newWorkoutName
-                            newWorkoutName = ""
-                            showAddWorkout = false
-                            Task { await store.createWorkoutPlan(clientId: client.id, name: name) }
-                        }
+        DarkSheet(title: "New Workout Plan") {
+            VStack(spacing: 16) {
+                FormField(label: "Plan Name", text: $newWorkoutName, placeholder: "e.g. Upper Body A")
+                HStack(spacing: 10) {
+                    PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
+                        showAddWorkout = false
                     }
-                    .padding(.horizontal, 20)
+                    PillButton(title: "Create Plan", style: .primary, fullWidth: true) {
+                        guard !newWorkoutName.isEmpty else { return }
+                        let name = newWorkoutName
+                        newWorkoutName = ""
+                        showAddWorkout = false
+                        Task { await store.createWorkoutPlan(clientId: client.id, name: name) }
+                    }
                 }
-                .padding(.top, 24)
+                .padding(.horizontal, 20)
             }
-            .navigationTitle("New Workout Plan")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.appBg, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
-        .presentationDetents([.medium])
-        .presentationBackground(Color(hex: "0c0c1c"))
     }
 
     // MARK: - Chat
@@ -783,6 +743,7 @@ struct ClientDetailView: View {
                         .padding(.top, 4)
                         .padding(.bottom, 8)
                     }
+                    .scrollDismissesKeyboard(.interactively)
                     .onChange(of: chatMessages.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("chatBottom") }
                     }
@@ -895,52 +856,19 @@ struct ClientDetailView: View {
     // MARK: - Video Name Sheet
 
     private var videoNameSheet: some View {
-        NavigationStack {
-            ZStack {
-                Color(hex: "0c0c1c").ignoresSafeArea()
-                VStack(spacing: 24) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("VIDEO NAME")
-                            .font(.mono(11, weight: .bold))
-                            .foregroundStyle(Color.white.opacity(0.4))
-                            .tracking(0.8)
-                        TextField("", text: $videoNameInput)
-                            .font(.body(15))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 14).padding(.vertical, 12)
-                            .background(Color.white.opacity(0.06))
-                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .autocorrectionDisabled()
-                    }
-                    .padding(.horizontal, 20)
-
-                    PillButton(title: "Upload", icon: "arrow.up.circle.fill") {
-                        showVideoNameSheet = false
-                        Task { await confirmVideoUpload() }
-                    }
-                    .padding(.horizontal, 20)
-
-                    Spacer()
+        DarkSheet(title: "Name Your Video", detents: [.height(240)], cancelAction: {
+            showVideoNameSheet = false
+            pendingVideoFile = nil
+        }) {
+            VStack(spacing: 24) {
+                FormField(label: "Video Name", text: $videoNameInput, placeholder: "")
+                PillButton(title: "Upload", icon: "arrow.up.circle.fill") {
+                    showVideoNameSheet = false
+                    Task { await confirmVideoUpload() }
                 }
-                .padding(.top, 24)
-            }
-            .navigationTitle("Name Your Video")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color(hex: "0c0c1c"), for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        showVideoNameSheet = false
-                        pendingVideoFile = nil
-                    }
-                    .foregroundStyle(Color.neonPink)
-                }
+                .padding(.horizontal, 20)
             }
         }
-        .presentationDetents([.height(240)])
-        .presentationBackground(Color(hex: "0c0c1c"))
     }
 
     private func confirmVideoUpload() async {
@@ -1103,13 +1031,7 @@ struct WorkoutPlanCard: View {
                 let linkedVideos = ex.videoIds.compactMap { id in videos.first(where: { $0.id == id }) }
                 let isLast = i == workout.exercises.count - 1
                 HStack(spacing: 12) {
-                    Text("\(i + 1)")
-                        .font(.display(13))
-                        .foregroundStyle(Color.neonPink)
-                        .frame(width: 28, height: 28)
-                        .background(Color.neonPink.opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.neonPink.opacity(0.20), lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    NumberBadge(number: i + 1)
 
                     Button { onEditExercise(ex) } label: {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1175,33 +1097,23 @@ struct WorkoutPlanCard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .sheet(isPresented: $showRenameSheet) {
-            NavigationStack {
-                ZStack {
-                    Color.appBg.ignoresSafeArea()
-                    VStack(spacing: 16) {
-                        FormField(label: "Plan Name", text: $renameText, placeholder: "e.g. Upper Body A")
-                        HStack(spacing: 10) {
-                            PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
-                                showRenameSheet = false
-                            }
-                            PillButton(title: "Save", style: .primary, fullWidth: true) {
-                                let name = renameText.trimmingCharacters(in: .whitespaces)
-                                guard !name.isEmpty else { return }
-                                showRenameSheet = false
-                                onRename(name)
-                            }
+            DarkSheet(title: "Rename Plan") {
+                VStack(spacing: 16) {
+                    FormField(label: "Plan Name", text: $renameText, placeholder: "e.g. Upper Body A")
+                    HStack(spacing: 10) {
+                        PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
+                            showRenameSheet = false
                         }
-                        .padding(.horizontal, 20)
+                        PillButton(title: "Save", style: .primary, fullWidth: true) {
+                            let name = renameText.trimmingCharacters(in: .whitespaces)
+                            guard !name.isEmpty else { return }
+                            showRenameSheet = false
+                            onRename(name)
+                        }
                     }
-                    .padding(.top, 24)
+                    .padding(.horizontal, 20)
                 }
-                .navigationTitle("Rename Plan")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(Color.appBg, for: .navigationBar)
-                .toolbarColorScheme(.dark, for: .navigationBar)
             }
-            .presentationDetents([.medium])
-            .presentationBackground(Color(hex: "0c0c1c"))
         }
     }
 }
@@ -1218,31 +1130,13 @@ struct VideoThumb: View {
     var body: some View {
         Button(action: onTap) {
             ZStack {
-                // Thumbnail or fallback pattern
+                Color.black
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+
                 if let thumb = thumbnail {
                     Image(uiImage: thumb)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                } else {
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.white.opacity(0.04))
-                        .overlay(
-                            Canvas { ctx, size in
-                                let spacing: CGFloat = 14
-                                var x: CGFloat = 0
-                                while x < size.width + size.height {
-                                    ctx.stroke(
-                                        Path { p in
-                                            p.move(to: CGPoint(x: x, y: 0))
-                                            p.addLine(to: CGPoint(x: x - size.height, y: size.height))
-                                        },
-                                        with: .color(Color.white.opacity(0.015)), lineWidth: 1
-                                    )
-                                    x += spacing
-                                }
-                            }
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                        )
                 }
 
                 RoundedRectangle(cornerRadius: 16)
@@ -1293,24 +1187,12 @@ struct VideoThumb: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
-        .task {
-            await generateThumbnail()
-        }
+        .task { await loadThumbnail() }
     }
 
-    private func generateThumbnail() async {
+    private func loadThumbnail() async {
         guard let url = video.url else { return }
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 480, height: 270)
-
-        do {
-            let (cgImage, _) = try await generator.image(at: .zero)
-            thumbnail = UIImage(cgImage: cgImage)
-        } catch {
-            // fall back to pattern background
-        }
+        thumbnail = await generateThumbnail(from: url, size: CGSize(width: 480, height: 270))
     }
 }
 
@@ -1517,19 +1399,12 @@ struct VideoPickerRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
-        .task { await generateThumbnail() }
+        .task { await loadThumbnail() }
     }
 
-    private func generateThumbnail() async {
+    private func loadThumbnail() async {
         guard thumbnail == nil, let url = video.url else { return }
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 160, height: 90)
-        do {
-            let (cgImage, _) = try await generator.image(at: .zero)
-            thumbnail = UIImage(cgImage: cgImage)
-        } catch {}
+        thumbnail = await generateThumbnail(from: url, size: CGSize(width: 160, height: 90))
     }
 }
 
@@ -1573,13 +1448,7 @@ struct WorkoutSessionCard: View {
                 VStack(spacing: 0) {
                     // Exercise header row
                     HStack(spacing: 12) {
-                        Text("\(i + 1)")
-                            .font(.display(13))
-                            .foregroundStyle(Color.neonCyan)
-                            .frame(width: 28, height: 28)
-                            .background(Color.neonCyan.opacity(0.10))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.neonCyan.opacity(0.18), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        NumberBadge(number: i + 1, color: .neonCyan)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
                             Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
