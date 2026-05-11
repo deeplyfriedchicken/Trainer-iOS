@@ -67,12 +67,12 @@ struct ClientDetailView: View {
     var body: some View {
         ZStack {
             if showRecording || exerciseRecordTarget != nil {
-                RecordingView(client: client) { video, clientId in
+                RecordingView(client: client) { video, clientId, onProgress in
                     if clientId == client.id {
                         client.videos.insert(video, at: 0)
                         if exerciseRecordTarget == nil { uploadBanner = video }
                     }
-                    let serverVideoId = try await store.addVideo(clientId: clientId, video: video)
+                    let serverVideoId = try await store.addVideo(clientId: clientId, video: video, onProgress: onProgress)
                     if let target = exerciseRecordTarget,
                        let wi = client.workoutPlans.firstIndex(where: { $0.id == target.workoutId }),
                        let ei = client.workoutPlans[wi].exercises.firstIndex(where: { $0.id == target.exerciseId }) {

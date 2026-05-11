@@ -7,7 +7,7 @@ import Photos
 
 struct RecordingView: View {
     private let client: Client
-    let onVideoSaved: (ClientVideo, String) async throws -> Void
+    let onVideoSaved: (ClientVideo, String, @escaping (Double) -> Void) async throws -> Void
     let onExit: () -> Void
 
     @Environment(AppStore.self) private var store
@@ -23,7 +23,7 @@ struct RecordingView: View {
     @State private var showClientPicker = false
 
     init(client: Client,
-         onVideoSaved: @escaping (ClientVideo, String) async throws -> Void,
+         onVideoSaved: @escaping (ClientVideo, String, @escaping (Double) -> Void) async throws -> Void,
          onExit: @escaping () -> Void) {
         self.client = client
         self.onVideoSaved = onVideoSaved
@@ -319,7 +319,9 @@ struct RecordingView: View {
                 videoName = makeDefaultName()
                 Task {
                     do {
-                        try await onVideoSaved(video, activeClient.id)
+                        try await onVideoSaved(video, activeClient.id) { p in
+                            Task { @MainActor in uploadTask.progress = p }
+                        }
                         uploadTask.phase = .done
                     } catch {
                         uploadTask.phase = .failed
@@ -429,6 +431,7 @@ final class UploadTask: Identifiable {
     let duration: String
     let videoURL: URL?
     var phase: Phase = .uploading
+    var progress: Double = 0
 
     init(duration: String, videoURL: URL?) {
         self.duration = duration
@@ -440,7 +443,7 @@ struct UploadSnackbarView: View {
     let task: UploadTask
     let onDismiss: (UUID) -> Void
 
-    @State private var barWidth: CGFloat = 0.15
+    @State private var barWidth: CGFloat = 0
     @State private var visible = true
 
     private var isDone: Bool   { task.phase == .done }
@@ -448,7 +451,11 @@ struct UploadSnackbarView: View {
 
     private var accentColor: Color { isFailed ? .neonRed : isDone ? .neonGreen : .neonCyan }
     private var iconName: String   { isFailed ? "xmark.circle" : isDone ? "checkmark" : "arrow.up.circle" }
-    private var labelText: String  { isFailed ? "Upload failed" : isDone ? "Upload complete" : "Uploading…" }
+    private var labelText: String  {
+        if isFailed { return "Upload failed" }
+        if isDone   { return "Upload complete" }
+        return "Uploading… \(Int(task.progress * 100))%"
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -510,10 +517,8 @@ struct UploadSnackbarView: View {
             insertion: .move(edge: .top).combined(with: .opacity),
             removal: .move(edge: .top).combined(with: .opacity)
         ))
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
-                barWidth = 0.65
-            }
+        .onChange(of: task.progress) { _, p in
+            withAnimation(.linear(duration: 0.15)) { barWidth = p }
         }
         .onChange(of: task.phase) { _, phase in
             switch phase {

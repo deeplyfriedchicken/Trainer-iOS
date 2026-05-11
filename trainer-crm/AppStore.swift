@@ -213,12 +213,14 @@ class AppStore {
     }
 
     @discardableResult
-    func addVideo(clientId: String, video: ClientVideo) async throws -> String {
+    func addVideo(clientId: String, video: ClientVideo,
+                  onProgress: @escaping (Double) -> Void = { _ in }) async throws -> String {
         guard let fileURL = video.url else { return video.id }
         let uploaded = try await api.uploadVideo(
             fileURL: fileURL,
             title: video.title,
-            traineeId: clientId
+            traineeId: clientId,
+            onProgress: onProgress
         )
         guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
               let vidx = clients[cidx].videos.firstIndex(where: { $0.id == video.id })

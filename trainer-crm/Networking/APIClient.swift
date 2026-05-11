@@ -209,7 +209,8 @@ final class APIClient {
         return wrapper.data
     }
 
-    func uploadVideo(fileURL: URL, title: String, traineeId: String) async throws -> VideoUploadResult {
+    func uploadVideo(fileURL: URL, title: String, traineeId: String,
+                     onProgress: @escaping (Double) -> Void = { _ in }) async throws -> VideoUploadResult {
         let mimeType = fileURL.pathExtension.lowercased() == "mp4" ? "video/mp4" : "video/quicktime"
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
 
@@ -227,7 +228,8 @@ final class APIClient {
         s3Req.httpMethod = "PUT"
         s3Req.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         do {
-            let (_, s3Response) = try await session.upload(for: s3Req, fromFile: fileURL)
+            let delegate = UploadProgressDelegate(onProgress: onProgress)
+            let (_, s3Response) = try await URLSession.shared.upload(for: s3Req, fromFile: fileURL, delegate: delegate)
             guard let http = s3Response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 throw APIError.serverError((s3Response as? HTTPURLResponse)?.statusCode ?? -1)
             }
@@ -513,6 +515,18 @@ struct VideoConfirmResponse: Decodable, Sendable {
 struct VideoUploadResult: Sendable {
     let videoId: String
     let fileUrl: String?
+}
+
+private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let onProgress: (Double) -> Void
+    init(onProgress: @escaping (Double) -> Void) { self.onProgress = onProgress }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
+                    totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        onProgress(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
+    }
 }
 
 // MARK: - Video feed types
