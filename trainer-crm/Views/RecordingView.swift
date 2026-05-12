@@ -618,15 +618,25 @@ struct CameraPreview: UIViewRepresentable {
 // MARK: - Camera Manager
 
 @MainActor
-final class CameraManager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate {
+final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     let objectWillChange = ObservableObjectPublisher()
 
     // nonisolated(unsafe) lets background queues configure AVFoundation without actor hops;
     // AVCaptureSession is designed to be configured from any thread.
     nonisolated(unsafe) let session = AVCaptureSession()
-    nonisolated(unsafe) private var videoOutput = AVCaptureMovieFileOutput()
+    nonisolated(unsafe) private let videoDataOutput = AVCaptureVideoDataOutput()
+    nonisolated(unsafe) private let audioDataOutput = AVCaptureAudioDataOutput()
+    private let recordingQueue = DispatchQueue(label: "camera.recording", qos: .userInitiated)
     private var currentPosition: AVCaptureDevice.Position = .back
     private var onFinished: ((URL) -> Void)?
+
+    // AVAssetWriter state — accessed only on recordingQueue
+    nonisolated(unsafe) private var assetWriter: AVAssetWriter?
+    nonisolated(unsafe) private var assetWriterVideoInput: AVAssetWriterInput?
+    nonisolated(unsafe) private var assetWriterAudioInput: AVAssetWriterInput?
+    nonisolated(unsafe) private var sessionStarted = false
+    nonisolated(unsafe) private var outputURL: URL?
+    nonisolated(unsafe) private var hasAudio = false
 
     func requestPermissionsAndStart() {
         Task {
@@ -649,21 +659,101 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureFileOutputRecord
         self.onFinished = onFinished
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("mov")
-        videoOutput.startRecording(to: url, recordingDelegate: self)
+            .appendingPathExtension("mp4")
+        outputURL = url
+
+        guard let writer = try? AVAssetWriter(url: url, fileType: .mp4) else { return }
+
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: 1280,
+            AVVideoHeightKey: 720
+        ]
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        videoInput.expectsMediaDataInRealTime = true
+        if let connection = videoDataOutput.connection(with: .video) {
+            if connection.isVideoMirroringSupported, currentPosition == .front {
+                connection.isVideoMirrored = true
+            }
+        }
+        // Always record in portrait. videoRotationAngle defaults to 0 on the
+        // output connection, so we hardcode the 90° hint in the container
+        // rather than reading a value that was never explicitly set.
+        videoInput.transform = CGAffineTransform(rotationAngle: .pi / 2)
+
+        assetWriter = writer
+        assetWriterVideoInput = videoInput
+        assetWriterAudioInput = nil
+        sessionStarted = false
+
+        if writer.canAdd(videoInput) {
+            writer.add(videoInput)
+        }
+
+        if hasAudio {
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVNumberOfChannelsKey: 1,
+                AVSampleRateKey: 44100,
+                AVEncoderBitRateKey: 64000
+            ]
+            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            audioInput.expectsMediaDataInRealTime = true
+            if writer.canAdd(audioInput) {
+                writer.add(audioInput)
+                assetWriterAudioInput = audioInput
+            }
+        }
+
+        videoDataOutput.setSampleBufferDelegate(self, queue: recordingQueue)
+        audioDataOutput.setSampleBufferDelegate(self, queue: recordingQueue)
     }
 
-    func stopRecording() { videoOutput.stopRecording() }
+    func stopRecording() {
+        videoDataOutput.setSampleBufferDelegate(nil, queue: nil)
+        audioDataOutput.setSampleBufferDelegate(nil, queue: nil)
 
-    // MARK: - AVCaptureFileOutputRecordingDelegate
+        let writer = assetWriter
+        if writer?.status == .unknown {
+            writer?.startWriting()
+        }
+        assetWriterVideoInput?.markAsFinished()
+        assetWriterAudioInput?.markAsFinished()
 
-    nonisolated func fileOutput(_ output: AVCaptureFileOutput,
-                                didFinishRecordingTo url: URL,
-                                from connections: [AVCaptureConnection],
-                                error: Error?) {
-        guard error == nil else { return }
-        saveToCameraRoll(url)
-        Task { @MainActor in self.onFinished?(url) }
+        let url = outputURL
+        assetWriter = nil
+        assetWriterVideoInput = nil
+        assetWriterAudioInput = nil
+        outputURL = nil
+
+        writer?.finishWriting { [weak self] in
+            guard let self, let url else { return }
+            self.saveToCameraRoll(url)
+            Task { @MainActor in self.onFinished?(url) }
+        }
+    }
+
+    // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate & AVCaptureAudioDataOutputSampleBufferDelegate
+
+    nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        let writer = assetWriter
+        let videoInput = assetWriterVideoInput
+        let audioInput = assetWriterAudioInput
+
+        if !sessionStarted {
+            sessionStarted = true
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if writer?.status == .unknown {
+                writer?.startWriting()
+            }
+            writer?.startSession(atSourceTime: timestamp)
+        }
+
+        if output === videoDataOutput, let videoInput, videoInput.isReadyForMoreMediaData {
+            _ = videoInput.append(sampleBuffer)
+        } else if output === audioDataOutput, let audioInput, audioInput.isReadyForMoreMediaData {
+            _ = audioInput.append(sampleBuffer)
+        }
     }
 
     nonisolated private func saveToCameraRoll(_ url: URL) {
@@ -678,29 +768,41 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureFileOutputRecord
 
     private func buildSession(position: AVCaptureDevice.Position) async {
         let captureSession = session
-        let newOutput = await withCheckedContinuation { (cont: CheckedContinuation<AVCaptureMovieFileOutput, Never>) in
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 captureSession.beginConfiguration()
                 captureSession.inputs.forEach  { captureSession.removeInput($0) }
                 captureSession.outputs.forEach { captureSession.removeOutput($0) }
+                captureSession.sessionPreset = .hd1280x720
 
                 if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
                    let input = try? AVCaptureDeviceInput(device: device),
                    captureSession.canAddInput(input) {
                     captureSession.addInput(input)
+                    try? device.lockForConfiguration()
+                    device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+                    device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+                    device.unlockForConfiguration()
                 }
+                var audioAdded = false
                 if let mic = AVCaptureDevice.default(for: .audio),
                    let micInput = try? AVCaptureDeviceInput(device: mic),
                    captureSession.canAddInput(micInput) {
                     captureSession.addInput(micInput)
+                    audioAdded = true
                 }
-                let out = AVCaptureMovieFileOutput()
-                if captureSession.canAddOutput(out) { captureSession.addOutput(out) }
+                self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
+                if captureSession.canAddOutput(self.videoDataOutput) {
+                    captureSession.addOutput(self.videoDataOutput)
+                }
+                if captureSession.canAddOutput(self.audioDataOutput) {
+                    captureSession.addOutput(self.audioDataOutput)
+                }
                 captureSession.commitConfiguration()
                 if !captureSession.isRunning { captureSession.startRunning() }
-                cont.resume(returning: out)
+                self.hasAudio = audioAdded
+                cont.resume(returning: ())
             }
         }
-        videoOutput = newOutput
     }
 }

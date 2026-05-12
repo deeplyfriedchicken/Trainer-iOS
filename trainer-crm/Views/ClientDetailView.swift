@@ -1196,12 +1196,16 @@ struct VideoThumb: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
-        .task { await loadThumbnail() }
+        .task(id: video.url) { await loadThumbnail() }
     }
 
     private func loadThumbnail() async {
+        if let cached = ThumbnailCache.shared.get(video.id) { thumbnail = cached; return }
         guard let url = video.url else { return }
-        thumbnail = await generateThumbnail(from: url, size: CGSize(width: 480, height: 270))
+        if let img = await generateThumbnail(from: url, size: CGSize(width: 480, height: 270)) {
+            ThumbnailCache.shared.set(img, for: video.id)
+            thumbnail = img
+        }
     }
 }
 
@@ -1555,7 +1559,7 @@ struct CopyProfileButton: View {
             Task {
                 do {
                     let result = try await APIClient.shared.fetchPortalLink(traineeId: clientId)
-                    UIPasteboard.general.string = Config.apiBaseURL + result.url
+                    UIPasteboard.general.string = result.url
                     withAnimation { state = .copied }
                     try? await Task.sleep(for: .seconds(2))
                     withAnimation { state = .idle }

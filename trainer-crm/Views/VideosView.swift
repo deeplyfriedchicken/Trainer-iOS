@@ -203,12 +203,16 @@ struct VideoFeedCell: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
-        .task { await loadThumbnail() }
+        .task(id: item.fileURL) { await loadThumbnail() }
     }
 
     private func loadThumbnail() async {
+        if let cached = ThumbnailCache.shared.get(item.id) { thumbnail = cached; return }
         guard let url = item.fileURL else { return }
-        thumbnail = await generateThumbnail(from: url, size: CGSize(width: 480, height: 960))
+        if let img = await generateThumbnail(from: url, size: CGSize(width: 480, height: 960)) {
+            ThumbnailCache.shared.set(img, for: item.id)
+            thumbnail = img
+        }
     }
 }
 
@@ -270,9 +274,13 @@ struct VideoDetailSheet: View {
             if showDeleteConfirm { deleteModal }
             if let t = toast { toastView(t) }
         }
-        .task {
+        .task(id: item.fileURL) {
+            if let cached = ThumbnailCache.shared.get(item.id) { thumbnail = cached; return }
             guard let url = item.fileURL else { return }
-            thumbnail = await generateThumbnail(from: url, size: CGSize(width: 480, height: 960))
+            if let img = await generateThumbnail(from: url, size: CGSize(width: 480, height: 960)) {
+                ThumbnailCache.shared.set(img, for: item.id)
+                thumbnail = img
+            }
         }
         .onDisappear {
             player?.pause()

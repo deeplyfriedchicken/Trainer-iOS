@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 
 enum APIError: Error, LocalizedError, Equatable {
@@ -211,13 +212,31 @@ final class APIClient {
 
     func uploadVideo(fileURL: URL, title: String, traineeId: String,
                      onProgress: @escaping (Double) -> Void = { _ in }) async throws -> VideoUploadResult {
-        let mimeType = fileURL.pathExtension.lowercased() == "mp4" ? "video/mp4" : "video/quicktime"
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
+        // Re-encode to bake in correct orientation before upload so the
+        // raw file on S3 has the right physical dimensions regardless of
+        // whether the backend transcoder respects rotation metadata.
+        let correctedURL = await reencodeVideoWithCorrectOrientation(sourceURL: fileURL)
+
+        let mimeType = correctedURL.pathExtension.lowercased() == "mp4" ? "video/mp4" : "video/quicktime"
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: correctedURL.path)[.size] as? Int) ?? 0
+
+        // Read video metadata from the original file so display dimensions
+        // reflect the true orientation, not a re-encoded file that may still
+        // carry the source's preferredTransform in its container metadata.
+        let metadata = await readVideoMetadata(from: fileURL)
 
         // Step 1: get presigned S3 upload URL from server
         let presign: PresignResponse = try await post(
             "/api/videos/presign",
-            body: PresignRequest(fileName: fileURL.lastPathComponent, mimeType: mimeType, fileSizeBytes: fileSize, traineeId: traineeId)
+            body: PresignRequest(
+                fileName: fileURL.lastPathComponent,
+                mimeType: mimeType,
+                fileSizeBytes: fileSize,
+                traineeId: traineeId,
+                width: metadata?.width,
+                height: metadata?.height,
+                duration: metadata?.duration
+            )
         )
 
         // Step 2: PUT file directly to S3 — no auth headers, the presigned URL carries auth
@@ -229,7 +248,7 @@ final class APIClient {
         s3Req.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         do {
             let delegate = UploadProgressDelegate(onProgress: onProgress)
-            let (_, s3Response) = try await URLSession.shared.upload(for: s3Req, fromFile: fileURL, delegate: delegate)
+            let (_, s3Response) = try await URLSession.shared.upload(for: s3Req, fromFile: correctedURL, delegate: delegate)
             guard let http = s3Response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 throw APIError.serverError((s3Response as? HTTPURLResponse)?.statusCode ?? -1)
             }
@@ -498,6 +517,9 @@ struct PresignRequest: Encodable, Sendable {
     let mimeType: String
     let fileSizeBytes: Int
     let traineeId: String?
+    let width: Int?
+    let height: Int?
+    let duration: Double?
 }
 
 struct PresignResponse: Decodable, Sendable {
@@ -515,6 +537,208 @@ struct VideoConfirmResponse: Decodable, Sendable {
 struct VideoUploadResult: Sendable {
     let videoId: String
     let fileUrl: String?
+}
+
+fileprivate struct VideoMetadata {
+    let width: Int
+    let height: Int
+    let duration: Double
+}
+
+fileprivate func readVideoMetadata(from url: URL) async -> VideoMetadata? {
+    let asset = AVURLAsset(url: url)
+    guard let videoTrack = try? await asset.loadTracks(withMediaType: .video).first else { return nil }
+    guard let naturalSize = try? await videoTrack.load(.naturalSize) else { return nil }
+    guard let preferredTransform = try? await videoTrack.load(.preferredTransform) else { return nil }
+    let duration: Double
+    do {
+        let cmTime = try await asset.load(.duration)
+        let seconds = CMTimeGetSeconds(cmTime)
+        duration = seconds.isFinite ? seconds : 0
+    } catch {
+        duration = 0
+    }
+    let displaySize = naturalSize.applying(preferredTransform)
+    let width = Int(abs(displaySize.width))
+    let height = Int(abs(displaySize.height))
+    return VideoMetadata(width: width, height: height, duration: duration)
+}
+
+/// Re-encodes the video so its pixel data matches its display orientation and
+/// the output container carries an identity preferredTransform (no rotation hint).
+/// Uses AVAssetReader + AVAssetWriter directly so the output track transform can
+/// be set to identity — AVAssetExportSession always copies the source track's
+/// preferredTransform, which causes players to double-rotate the content.
+private func reencodeVideoWithCorrectOrientation(sourceURL: URL) async -> URL {
+    let asset = AVURLAsset(url: sourceURL)
+    guard let videoTrack = try? await asset.loadTracks(withMediaType: .video).first else {
+        return sourceURL
+    }
+
+    let preferredTransform = (try? await videoTrack.load(.preferredTransform)) ?? .identity
+    let naturalSize = (try? await videoTrack.load(.naturalSize)) ?? .zero
+    let displaySize = naturalSize.applying(preferredTransform)
+    let renderWidth = Int(abs(displaySize.width))
+    let renderHeight = Int(abs(displaySize.height))
+
+    if renderWidth == Int(abs(naturalSize.width)),
+       renderHeight == Int(abs(naturalSize.height)) {
+        return sourceURL
+    }
+
+    guard let assetDuration = try? await asset.load(.duration) else { return sourceURL }
+
+    // Rotation alone may place content in negative coordinates; shift it back.
+    // Order matters: rotate first, then translate.
+    let w = naturalSize.width
+    let h = naturalSize.height
+    let corners = [
+        CGPoint.zero.applying(preferredTransform),
+        CGPoint(x: w, y: 0).applying(preferredTransform),
+        CGPoint(x: 0, y: h).applying(preferredTransform),
+        CGPoint(x: w, y: h).applying(preferredTransform),
+    ]
+    let shiftX = corners.map(\.x).min() ?? 0
+    let shiftY = corners.map(\.y).min() ?? 0
+    let correction = CGAffineTransform(translationX: -shiftX, y: -shiftY)
+    let correctedTransform = preferredTransform.concatenating(correction)
+
+    let videoComposition: AVVideoComposition
+    if #available(iOS 26, macOS 26, *) {
+        var layerConfig = AVVideoCompositionLayerInstruction.Configuration()
+        layerConfig.trackID = videoTrack.trackID
+        layerConfig.setTransform(correctedTransform, at: .zero)
+        let layerInstruction = AVVideoCompositionLayerInstruction(configuration: layerConfig)
+
+        var instrConfig = AVVideoCompositionInstruction.Configuration()
+        instrConfig.timeRange = CMTimeRange(start: .zero, duration: assetDuration)
+        instrConfig.layerInstructions = [layerInstruction]
+        let instruction = AVVideoCompositionInstruction(configuration: instrConfig)
+
+        var compConfig = AVVideoComposition.Configuration()
+        compConfig.renderSize = CGSize(width: renderWidth, height: renderHeight)
+        compConfig.frameDuration = CMTime(value: 1, timescale: 30)
+        compConfig.instructions = [instruction]
+        videoComposition = AVVideoComposition(configuration: compConfig)
+    } else {
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+        layerInstruction.setTransform(correctedTransform, at: .zero)
+
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: assetDuration)
+        instruction.layerInstructions = [layerInstruction]
+
+        let mutableComposition = AVMutableVideoComposition()
+        mutableComposition.renderSize = CGSize(width: renderWidth, height: renderHeight)
+        mutableComposition.frameDuration = CMTime(value: 1, timescale: 30)
+        mutableComposition.instructions = [instruction]
+        videoComposition = mutableComposition
+    }
+
+    let outputURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathExtension("mp4")
+
+    guard let reader = try? AVAssetReader(asset: asset),
+          let writer = try? AVAssetWriter(url: outputURL, fileType: .mp4) else {
+        return sourceURL
+    }
+
+    // Decode through the composition (applies rotation + translation).
+    let videoReaderOutput = AVAssetReaderVideoCompositionOutput(
+        videoTracks: [videoTrack],
+        videoSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+    )
+    videoReaderOutput.videoComposition = videoComposition
+    guard reader.canAdd(videoReaderOutput) else { return sourceURL }
+    reader.add(videoReaderOutput)
+
+    // Re-encode with identity transform so no rotation hint survives in the container.
+    let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: renderWidth,
+        AVVideoHeightKey: renderHeight,
+        AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 5_000_000],
+    ])
+    videoWriterInput.transform = .identity
+    videoWriterInput.expectsMediaDataInRealTime = false
+    guard writer.canAdd(videoWriterInput) else { return sourceURL }
+    writer.add(videoWriterInput)
+
+    // Audio: pass-through with no re-encode.
+    var audioReaderOutput: AVAssetReaderTrackOutput? = nil
+    var audioWriterInput: AVAssetWriterInput? = nil
+    if let audioTrack = try? await asset.loadTracks(withMediaType: .audio).first {
+        let aOut = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+        if reader.canAdd(aOut) {
+            reader.add(aOut)
+            audioReaderOutput = aOut
+            let fmts = try? await audioTrack.load(.formatDescriptions)
+            let aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: nil,
+                                         sourceFormatHint: fmts?.first)
+            aIn.expectsMediaDataInRealTime = false
+            if writer.canAdd(aIn) {
+                writer.add(aIn)
+                audioWriterInput = aIn
+            }
+        }
+    }
+
+    reader.startReading()
+    writer.startWriting()
+    writer.startSession(atSourceTime: .zero)
+
+    // AVFoundation types predate Sendable; box them so the @Sendable closures
+    // passed to requestMediaDataWhenReady only capture the wrapper (which IS
+    // Sendable) rather than the raw AVFoundation objects directly.
+    struct Box<T>: @unchecked Sendable { let v: T }
+    let vIn  = Box(v: videoWriterInput)
+    let vOut = Box(v: videoReaderOutput)
+
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+        // Single serial queue keeps `pending` access race-free across both tracks.
+        let q = DispatchQueue(label: "video.reencode", qos: .userInitiated)
+        var pending = 1 + (audioWriterInput != nil ? 1 : 0)
+
+        func trackFinished() {
+            pending -= 1
+            if pending == 0 { writer.finishWriting { cont.resume() } }
+        }
+
+        vIn.v.requestMediaDataWhenReady(on: q) {
+            while vIn.v.isReadyForMoreMediaData {
+                if let buf = vOut.v.copyNextSampleBuffer() {
+                    vIn.v.append(buf)
+                } else {
+                    vIn.v.markAsFinished()
+                    trackFinished()
+                    return
+                }
+            }
+        }
+
+        if let aIn = audioWriterInput, let aOut = audioReaderOutput {
+            let bIn  = Box(v: aIn)
+            let bOut = Box(v: aOut)
+            bIn.v.requestMediaDataWhenReady(on: q) {
+                while bIn.v.isReadyForMoreMediaData {
+                    if let buf = bOut.v.copyNextSampleBuffer() {
+                        bIn.v.append(buf)
+                    } else {
+                        bIn.v.markAsFinished()
+                        trackFinished()
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    guard writer.status == .completed else {
+        try? FileManager.default.removeItem(at: outputURL)
+        return sourceURL
+    }
+    return outputURL
 }
 
 private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

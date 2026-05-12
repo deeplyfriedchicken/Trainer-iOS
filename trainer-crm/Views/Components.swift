@@ -1,13 +1,47 @@
 import SwiftUI
 import AVFoundation
 
+// MARK: - Thumbnail cache
+
+final class ThumbnailCache: @unchecked Sendable {
+    static let shared = ThumbnailCache()
+    private let memory = NSCache<NSString, UIImage>()
+    private let diskDir: URL = {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("video_thumbnails")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    private func diskURL(for id: String) -> URL {
+        diskDir.appendingPathComponent(id).appendingPathExtension("jpg")
+    }
+
+    func get(_ id: String) -> UIImage? {
+        if let img = memory.object(forKey: id as NSString) { return img }
+        guard let data = try? Data(contentsOf: diskURL(for: id)),
+              let img = UIImage(data: data) else { return nil }
+        memory.setObject(img, forKey: id as NSString)
+        return img
+    }
+
+    func set(_ image: UIImage, for id: String) {
+        memory.setObject(image, forKey: id as NSString)
+        if let data = image.jpegData(compressionQuality: 0.75) {
+            try? data.write(to: diskURL(for: id))
+        }
+    }
+}
+
 // MARK: - Thumbnail generation
 
 func generateThumbnail(from url: URL, size: CGSize) async -> UIImage? {
-    let asset = AVURLAsset(url: url)
+    let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
     let generator = AVAssetImageGenerator(asset: asset)
     generator.appliesPreferredTrackTransform = true
     generator.maximumSize = size
+    generator.requestedTimeToleranceBefore = .positiveInfinity
+    generator.requestedTimeToleranceAfter = .positiveInfinity
     do {
         let (cgImage, _) = try await generator.image(at: .zero)
         return UIImage(cgImage: cgImage)

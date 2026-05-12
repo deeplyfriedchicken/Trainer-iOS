@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 import WebKit
 
 @Observable
@@ -222,6 +223,10 @@ class AppStore {
             traineeId: clientId,
             onProgress: onProgress
         )
+        // Cache thumbnail from the local file now — remote fetch is slow and unreliable.
+        if let img = await generateThumbnail(from: fileURL, size: CGSize(width: 480, height: 270)) {
+            ThumbnailCache.shared.set(img, for: uploaded.videoId)
+        }
         guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
               let vidx = clients[cidx].videos.firstIndex(where: { $0.id == video.id })
         else { return uploaded.videoId }
