@@ -21,7 +21,6 @@ struct ClientDetailView: View {
     @State private var editExNotes = ""
     @State private var editExVideoIds: Set<String> = []
     @State private var newWorkoutName = ""
-    @State private var uploadBanner: ClientVideo? = nil
     @State private var playerItem: AVPlayerItem? = nil
     @State private var playingVideo: ClientVideo? = nil
     @State private var galleryVideos: [ClientVideo] = []
@@ -41,6 +40,9 @@ struct ClientDetailView: View {
     @State private var uploadingVideoLocalId: String? = nil
     @State private var pendingVideoFile: VideoFile? = nil
     @State private var pendingVideoIsExercise = false
+    @State private var videoLoadTask: Task<VideoFile?, Never>? = nil
+    @State private var isAwaitingFile = false
+    @State private var exerciseUploadProgress: Double = 0
     @State private var videoNameInput = ""
     @State private var showVideoNameSheet = false
     @State private var videoToDelete: ClientVideo? = nil
@@ -49,6 +51,16 @@ struct ClientDetailView: View {
     private var canDeleteVideos: Bool {
         guard let roles = store.currentUser?.roles else { return false }
         return roles.contains("admin") || roles.contains("trainer_admin")
+    }
+
+    private var hasProcessingLinkedVideos: Bool {
+        client.workoutPlans.contains { plan in
+            plan.exercises.contains { ex in
+                ex.videoIds.contains { id in
+                    client.videos.first(where: { $0.id == id })?.isProcessing == true
+                }
+            }
+        }
     }
 
     enum DetailTab: String, CaseIterable {
@@ -70,7 +82,6 @@ struct ClientDetailView: View {
                 RecordingView(client: client) { video, clientId, onProgress in
                     if clientId == client.id {
                         client.videos.insert(video, at: 0)
-                        if exerciseRecordTarget == nil { uploadBanner = video }
                     }
                     let serverVideoId = try await store.addVideo(clientId: clientId, video: video, onProgress: onProgress)
                     if let target = exerciseRecordTarget,
@@ -89,11 +100,35 @@ struct ClientDetailView: View {
             } else {
                 mainContent
             }
+
+            // Persistent upload snackbars — visible after RecordingView is dismissed.
+            // RecordingView shows the same tasks while recording; we only render
+            // here when it's not active to avoid double-showing.
+            if !showRecording && exerciseRecordTarget == nil && !store.uploadTasks.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(store.uploadTasks) { task in
+                        UploadSnackbarView(task: task) { id in
+                            withAnimation { store.uploadTasks.removeAll { $0.id == id } }
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.top, 60)
+                .padding(.horizontal, 16)
+            }
         }
         .background(Color.appBg.ignoresSafeArea())
         .animation(.easeInOut(duration: 0.25), value: showRecording || exerciseRecordTarget != nil)
         .task(id: client.id) {
             await store.loadClientDetail(client.id)
+        }
+        .task(id: hasProcessingLinkedVideos) {
+            guard hasProcessingLinkedVideos else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await store.loadClientDetail(client.id)
+            }
         }
         .onChange(of: activeTab) { _, newTab in
             if newTab == .chat, chatId == nil {
@@ -113,26 +148,24 @@ struct ClientDetailView: View {
         .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .videos)
         .onChange(of: selectedPhotoItem) { _, item in
             guard let item else { return }
-            Task {
+            pendingVideoIsExercise = false
+            videoNameInput = Date.now.formatted(.dateTime.month(.abbreviated).day())
+            showVideoNameSheet = true
+            videoLoadTask = Task {
                 defer { selectedPhotoItem = nil }
-                guard let videoFile = try? await item.loadTransferable(type: VideoFile.self) else { return }
-                pendingVideoFile = videoFile
-                pendingVideoIsExercise = false
-                videoNameInput = Date.now.formatted(.dateTime.month(.abbreviated).day())
-                showVideoNameSheet = true
+                return try? await item.loadTransferable(type: VideoFile.self)
             }
         }
         .onChange(of: selectedExercisePhotoItem) { _, item in
             guard let item else { return }
-            Task {
+            pendingVideoIsExercise = true
+            let datePart = Date.now.formatted(.dateTime.month(.abbreviated).day())
+            let exercisePart = editExName.trimmingCharacters(in: .whitespaces)
+            videoNameInput = exercisePart.isEmpty ? datePart : "\(exercisePart) \(datePart)"
+            showVideoNameSheet = true
+            videoLoadTask = Task {
                 defer { selectedExercisePhotoItem = nil }
-                guard let videoFile = try? await item.loadTransferable(type: VideoFile.self) else { return }
-                pendingVideoFile = videoFile
-                pendingVideoIsExercise = true
-                let datePart = Date.now.formatted(.dateTime.month(.abbreviated).day())
-                let exercisePart = editExName.trimmingCharacters(in: .whitespaces)
-                videoNameInput = exercisePart.isEmpty ? datePart : "\(exercisePart) \(datePart)"
-                showVideoNameSheet = true
+                return try? await item.loadTransferable(type: VideoFile.self)
             }
         }
         .sheet(isPresented: $showVideoNameSheet) { videoNameSheet }
@@ -312,25 +345,6 @@ struct ClientDetailView: View {
 
     private var overviewContent: some View {
         VStack(spacing: 0) {
-            if let banner = uploadBanner {
-                HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.neonGreen)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Video uploaded!").font(.body(13, weight: .semibold)).foregroundStyle(Color.neonGreen)
-                        Text("\"\(banner.title)\" added to Videos tab")
-                            .font(.body(11)).foregroundStyle(Color.white.opacity(0.5))
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 14).padding(.vertical, 12)
-                .background(Color.neonGreen.opacity(0.08))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.neonGreen.opacity(0.22), lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .padding(.horizontal, 16).padding(.bottom, 10)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
             SectionHeader(title: "Info")
 
             ForEach([
@@ -600,7 +614,9 @@ struct ClientDetailView: View {
                                 VideoPickerRow(
                                     video: video,
                                     isSelected: editExVideoIds.contains(video.id),
-                                    isUploading: video.id == uploadingVideoLocalId
+                                    isUploading: video.id == uploadingVideoLocalId,
+                                    uploadProgress: video.id == uploadingVideoLocalId ? exerciseUploadProgress : nil,
+                                    isProcessing: video.isProcessing && video.id != uploadingVideoLocalId
                                 ) {
                                     if editExVideoIds.contains(video.id) { editExVideoIds.remove(video.id) }
                                     else { editExVideoIds.insert(video.id) }
@@ -868,12 +884,28 @@ struct ClientDetailView: View {
         DarkSheet(title: "Name Your Video", detents: [.height(240)], cancelAction: {
             showVideoNameSheet = false
             pendingVideoFile = nil
+            videoLoadTask?.cancel()
+            videoLoadTask = nil
         }) {
             VStack(spacing: 24) {
                 FormField(label: "Video Name", text: $videoNameInput, placeholder: "", clearable: true)
-                PillButton(title: "Upload", icon: "arrow.up.circle.fill") {
-                    showVideoNameSheet = false
-                    Task { await confirmVideoUpload() }
+                Group {
+                    if isAwaitingFile {
+                        HStack(spacing: 6) {
+                            ProgressView().tint(.white).scaleEffect(0.75)
+                            Text("Preparing…")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .background(Color.neonPink.opacity(0.5))
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                    } else {
+                        PillButton(title: "Upload", icon: "arrow.up.circle.fill") {
+                            Task { await confirmVideoUpload() }
+                        }
+                    }
                 }
                 .padding(.horizontal, 20)
             }
@@ -881,7 +913,20 @@ struct ClientDetailView: View {
     }
 
     private func confirmVideoUpload() async {
-        guard let videoFile = pendingVideoFile else { return }
+        let resolvedFile: VideoFile?
+        if let task = videoLoadTask {
+            isAwaitingFile = true
+            resolvedFile = await task.value
+            isAwaitingFile = false
+            videoLoadTask = nil
+        } else {
+            resolvedFile = pendingVideoFile
+        }
+        showVideoNameSheet = false
+        guard let videoFile = resolvedFile else {
+            pendingVideoFile = nil
+            return
+        }
         defer { pendingVideoFile = nil }
         let title = videoNameInput.trimmingCharacters(in: .whitespaces).isEmpty
             ? Date.now.formatted(.dateTime.month(.abbreviated).day())
@@ -896,19 +941,31 @@ struct ClientDetailView: View {
             isUploadingExerciseVideo = true
             client.videos.insert(video, at: 0)
             uploadingVideoLocalId = video.id
+            exerciseUploadProgress = 0
             defer {
                 isUploadingExerciseVideo = false
                 uploadingVideoLocalId = nil
+                exerciseUploadProgress = 0
             }
-            guard let serverVideoId = try? await store.addVideo(clientId: client.id, video: video) else {
+            guard let serverVideoId = try? await store.addVideo(clientId: client.id, video: video, onProgress: { p in
+                Task { @MainActor in exerciseUploadProgress = p }
+            }) else {
                 client.videos.removeAll { $0.id == video.id }
                 return
             }
             editExVideoIds.insert(serverVideoId)
         } else {
             client.videos.insert(video, at: 0)
-            uploadBanner = video
-            _ = try? await store.addVideo(clientId: client.id, video: video)
+            let task = UploadTask(duration: "", videoURL: video.url)
+            withAnimation { store.uploadTasks.insert(task, at: 0) }
+            do {
+                _ = try await store.addVideo(clientId: client.id, video: video) { p in
+                    task.progress = p
+                }
+                task.phase = .done
+            } catch {
+                task.phase = .failed
+            }
         }
     }
 }
@@ -1053,21 +1110,33 @@ struct WorkoutPlanCard: View {
                     Spacer()
 
                     if !linkedVideos.isEmpty {
-                        Button { onPlayVideos(linkedVideos) } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: linkedVideos.count > 1 ? "play.square.stack.fill" : "play.fill")
-                                    .font(.system(size: linkedVideos.count > 1 ? 11 : 9))
-                                if linkedVideos.count > 1 {
-                                    Text("\(linkedVideos.count)").font(.mono(9))
+                        let anyProcessing = linkedVideos.contains { $0.isProcessing }
+                        let readyVideos = linkedVideos.filter { !$0.isProcessing }
+                        if anyProcessing {
+                            ProgressView()
+                                .tint(Color.neonCyan)
+                                .scaleEffect(0.75)
+                                .padding(.horizontal, 7).padding(.vertical, 5)
+                                .background(Color.neonCyan.opacity(0.08))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        } else if !readyVideos.isEmpty {
+                            Button { onPlayVideos(readyVideos) } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: readyVideos.count > 1 ? "play.square.stack.fill" : "play.fill")
+                                        .font(.system(size: readyVideos.count > 1 ? 11 : 9))
+                                    if readyVideos.count > 1 {
+                                        Text("\(readyVideos.count)").font(.mono(9))
+                                    }
                                 }
+                                .foregroundStyle(Color.neonCyan)
+                                .padding(.horizontal, 7).padding(.vertical, 5)
+                                .background(Color.neonCyan.opacity(0.12))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
                             }
-                            .foregroundStyle(Color.neonCyan)
-                            .padding(.horizontal, 7).padding(.vertical, 5)
-                            .background(Color.neonCyan.opacity(0.12))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
 
                     Button { onRecordForExercise(ex) } label: {
@@ -1341,74 +1410,117 @@ struct VideoPickerRow: View {
     let video: ClientVideo
     let isSelected: Bool
     var isUploading: Bool = false
+    var uploadProgress: Double? = nil
+    var isProcessing: Bool = false
     let onToggle: () -> Void
 
     @State private var thumbnail: UIImage? = nil
 
+    private var thumbBorderColor: Color {
+        if isUploading { return Color.neonCyan.opacity(0.25) }
+        if isProcessing { return Color.white.opacity(0.08) }
+        return isSelected ? Color.neonPink.opacity(0.45) : Color.white.opacity(0.10)
+    }
+
+    private var rowBgColor: Color {
+        if isUploading { return Color.neonCyan.opacity(0.04) }
+        if isProcessing { return Color.white.opacity(0.02) }
+        return isSelected ? Color.neonPink.opacity(0.07) : Color.white.opacity(0.04)
+    }
+
+    private var rowBorderColor: Color {
+        if isUploading { return Color.neonCyan.opacity(0.15) }
+        if isProcessing { return Color.white.opacity(0.06) }
+        return isSelected ? Color.neonPink.opacity(0.25) : Color.white.opacity(0.08)
+    }
+
+    @ViewBuilder
+    private var thumbnailView: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isUploading ? Color.neonCyan.opacity(0.08) : Color.white.opacity(0.04))
+            if isUploading || isProcessing {
+                ProgressView()
+                    .tint(isUploading ? Color.neonCyan : Color.white.opacity(0.35))
+                    .scaleEffect(0.75)
+            } else if let thumb = thumbnail {
+                Image(uiImage: thumb)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipped()
+            } else {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.white.opacity(0.2))
+            }
+            if isSelected && !isUploading {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.neonPink.opacity(isProcessing ? 0.10 : 0.25))
+            }
+        }
+        .frame(width: 76, height: 46)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(thumbBorderColor, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var trailingView: some View {
+        if isUploading {
+            if let progress = uploadProgress {
+                Text("\(Int(progress * 100))%")
+                    .font(.mono(10, weight: .semibold))
+                    .foregroundStyle(Color.neonCyan)
+                    .frame(width: 36)
+            } else {
+                ProgressView()
+                    .tint(Color.neonCyan)
+                    .scaleEffect(0.7)
+                    .frame(width: 20)
+            }
+        } else if isProcessing {
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.white.opacity(0.2))
+            } else {
+                ProgressView()
+                    .tint(Color.white.opacity(0.3))
+                    .scaleEffect(0.7)
+                    .frame(width: 20)
+            }
+        } else {
+            if !video.duration.isEmpty {
+                Text(video.duration)
+                    .font(.mono(10))
+                    .foregroundStyle(Color.white.opacity(0.4))
+            }
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 18))
+                .foregroundStyle(isSelected ? Color.neonPink : Color.white.opacity(0.25))
+        }
+    }
+
     var body: some View {
-        Button(action: { if !isUploading { onToggle() } }) {
+        Button(action: { if !isUploading && !isProcessing { onToggle() } }) {
             HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isUploading ? Color.neonCyan.opacity(0.08) : Color.white.opacity(0.06))
-                    if isUploading {
-                        ProgressView()
-                            .tint(Color.neonCyan)
-                            .scaleEffect(0.75)
-                    } else if let thumb = thumbnail {
-                        Image(uiImage: thumb)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .clipped()
-                    } else {
-                        Image(systemName: "video.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.white.opacity(0.2))
-                    }
-                    if isSelected && !isUploading {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.neonPink.opacity(0.25))
-                    }
-                }
-                .frame(width: 76, height: 46)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(
-                    isUploading ? Color.neonCyan.opacity(0.25) : (isSelected ? Color.neonPink.opacity(0.45) : Color.white.opacity(0.10)),
-                    lineWidth: 1))
+                thumbnailView
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(video.title)
                         .font(.body(13, weight: .semibold))
-                        .foregroundStyle(isUploading ? Color.white.opacity(0.5) : .white)
+                        .foregroundStyle(isUploading || isProcessing ? Color.white.opacity(0.4) : .white)
                         .lineLimit(1)
-                    Text(isUploading ? "Uploading…" : video.date)
+                    Text(isUploading ? "Uploading…" : isProcessing ? "Processing…" : video.date)
                         .font(.mono(10))
-                        .foregroundStyle(isUploading ? Color.neonCyan.opacity(0.7) : Color.white.opacity(0.4))
+                        .foregroundStyle(isUploading ? Color.neonCyan.opacity(0.7) : Color.white.opacity(0.3))
                 }
 
                 Spacer()
-
-                if isUploading {
-                    ProgressView()
-                        .tint(Color.neonCyan)
-                        .scaleEffect(0.7)
-                        .frame(width: 20)
-                } else {
-                    if !video.duration.isEmpty {
-                        Text(video.duration)
-                            .font(.mono(10))
-                            .foregroundStyle(Color.white.opacity(0.4))
-                    }
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(isSelected ? Color.neonPink : Color.white.opacity(0.25))
-                }
+                trailingView
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(isUploading ? Color.neonCyan.opacity(0.04) : (isSelected ? Color.neonPink.opacity(0.07) : Color.white.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(
-                isUploading ? Color.neonCyan.opacity(0.15) : (isSelected ? Color.neonPink.opacity(0.25) : Color.white.opacity(0.08)),
-                lineWidth: 1))
+            .background(rowBgColor)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(rowBorderColor, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)

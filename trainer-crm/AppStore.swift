@@ -16,6 +16,8 @@ class AppStore {
     var error: APIError? = nil
     var refreshMessage: String? = nil
 
+    var uploadTasks: [UploadTask] = []
+
     var feedVideos: [VideoFeedItem] = []
     var isFeedLoading: Bool = false
     var feedHasMore: Bool = true
@@ -173,7 +175,8 @@ class AppStore {
             }()
             return ClientVideo(id: v.id, title: v.title ?? "Recording",
                                date: dateStr, duration: durStr,
-                               url: v.fileUrl.flatMap(URL.init), createdAt: v.createdAt)
+                               url: v.fileUrl.flatMap(URL.init), createdAt: v.createdAt,
+                               isProcessing: v.status.map { $0 != "ready" } ?? false)
         }
 
         let linkedVideos: [ClientVideo] = (detail.workoutPlans ?? []).flatMap { plan in
@@ -181,14 +184,16 @@ class AppStore {
                 guard let v = link.video else { return nil }
                 return ClientVideo(id: v.id, title: v.title ?? plan.name,
                                    date: "", duration: "",
-                                   url: v.fileUrl.flatMap(URL.init))
+                                   url: v.fileUrl.flatMap(URL.init),
+                                   isProcessing: v.status.map { $0 != "ready" } ?? false)
             }
             let exerciseVideos = (plan.exercises ?? []).flatMap { ex in
                 (ex.videoLinks ?? []).compactMap { link -> ClientVideo? in
                     guard let v = link.video else { return nil }
                     return ClientVideo(id: v.id, title: v.title ?? plan.name,
                                        date: "", duration: "",
-                                       url: v.fileUrl.flatMap(URL.init))
+                                       url: v.fileUrl.flatMap(URL.init),
+                                       isProcessing: v.status.map { $0 != "ready" } ?? false)
                 }
             }
             return planVideos + exerciseVideos
@@ -199,7 +204,8 @@ class AppStore {
                 guard let v = link.video else { return nil }
                 return ClientVideo(id: v.id, title: v.title ?? w.workoutPlan?.name ?? "Workout",
                                    date: "", duration: "",
-                                   url: v.fileUrl.flatMap(URL.init))
+                                   url: v.fileUrl.flatMap(URL.init),
+                                   isProcessing: v.status.map { $0 != "ready" } ?? false)
             }
         }
 

@@ -14,7 +14,6 @@ struct RecordingView: View {
     @StateObject private var camera = CameraManager()
     @State private var elapsed = 0
     @State private var isRecording = false
-    @State private var snackbars: [UploadTask] = []
     @State private var timer: Timer? = nil
     @State private var videoName = ""
     @FocusState private var nameFieldFocused: Bool
@@ -59,11 +58,11 @@ struct RecordingView: View {
             // Focus corners
             FocusCorners(active: isRecording)
 
-            // Snackbar stack
+            // Snackbar stack — reads from store so tasks survive view dismissal
             VStack(spacing: 8) {
-                ForEach(snackbars) { task in
+                ForEach(store.uploadTasks) { task in
                     UploadSnackbarView(task: task) { id in
-                        withAnimation { snackbars.removeAll { $0.id == id } }
+                        withAnimation { store.uploadTasks.removeAll { $0.id == id } }
                     }
                 }
                 Spacer()
@@ -315,7 +314,7 @@ struct RecordingView: View {
                     createdAt: now
                 )
                 let uploadTask = UploadTask(duration: dur, videoURL: url)
-                withAnimation { snackbars.insert(uploadTask, at: 0) }
+                withAnimation { store.uploadTasks.insert(uploadTask, at: 0) }
                 videoName = makeDefaultName()
                 Task {
                     do {

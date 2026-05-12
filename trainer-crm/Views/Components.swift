@@ -43,7 +43,9 @@ func generateThumbnail(from url: URL, size: CGSize) async -> UIImage? {
     generator.requestedTimeToleranceBefore = .positiveInfinity
     generator.requestedTimeToleranceAfter = .positiveInfinity
     do {
-        let (cgImage, _) = try await generator.image(at: .zero)
+        // Seek 0.5 s in rather than frame zero — recordings start with black
+        // frames while the camera sensor auto-adjusts exposure.
+        let (cgImage, _) = try await generator.image(at: CMTime(seconds: 0.5, preferredTimescale: 600))
         return UIImage(cgImage: cgImage)
     } catch {
         return nil

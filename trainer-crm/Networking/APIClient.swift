@@ -447,6 +447,7 @@ struct DirectVideoResponse: Decodable, Sendable {
     let fileUrl: String?
     let durationSeconds: Int?
     let createdAt: Date?
+    let status: String?
 }
 
 struct WorkoutPlanDetailResponse: Decodable, Identifiable, Sendable {
@@ -475,6 +476,7 @@ struct LinkedVideoResponse: Decodable, Sendable {
     let id: String
     let title: String?
     let fileUrl: String?
+    let status: String?
 }
 
 struct ExercisePayload: Encodable, Sendable {

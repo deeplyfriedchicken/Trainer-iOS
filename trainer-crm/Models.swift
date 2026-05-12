@@ -34,6 +34,7 @@ struct ClientVideo: Identifiable {
     var duration: String
     var url: URL?
     var createdAt: Date?
+    var isProcessing: Bool = false
 }
 
 // MARK: - Workout
