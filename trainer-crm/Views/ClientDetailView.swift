@@ -135,7 +135,10 @@ struct ClientDetailView: View {
                 Task { await loadChat() }
             }
         }
-        .sheet(isPresented: $showEditExercise) { editExerciseSheet }
+        .sheet(isPresented: $showEditExercise) {
+            editExerciseSheet
+                .sheet(isPresented: $showVideoNameSheet) { videoNameSheet }
+        }
         .sheet(isPresented: $showAddWorkout) { addWorkoutSheet }
         .fullScreenCover(item: $playingVideo) { video in
             VideoPlayerView(video: video, canDelete: canDeleteVideos) {
