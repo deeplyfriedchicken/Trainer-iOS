@@ -135,7 +135,10 @@ struct ClientDetailView: View {
                 Task { await loadChat() }
             }
         }
-        .sheet(isPresented: $showEditExercise) { editExerciseSheet }
+        .sheet(isPresented: $showEditExercise) {
+            editExerciseSheet
+                .sheet(isPresented: $showVideoNameSheet) { videoNameSheet }
+        }
         .sheet(isPresented: $showAddWorkout) { addWorkoutSheet }
         .fullScreenCover(item: $playingVideo) { video in
             VideoPlayerView(video: video, canDelete: canDeleteVideos) {
@@ -444,6 +447,19 @@ struct ClientDetailView: View {
                         },
                         onRecordForExercise: { ex in
                             exerciseRecordTarget = (workoutId: workout.id, exerciseId: ex.id)
+                        },
+                        onReorder: { newOrder in
+                            guard let wi = client.workoutPlans.firstIndex(where: { $0.id == workout.id }) else { return }
+                            client.workoutPlans[wi].exercises = newOrder
+                            let planName = client.workoutPlans[wi].name
+                            Task {
+                                await store.updateWorkoutPlan(
+                                    planId: workout.id,
+                                    clientId: client.id,
+                                    name: planName,
+                                    exercises: newOrder
+                                )
+                            }
                         }
                     )
                     .padding(.horizontal, 16).padding(.bottom, 12)
@@ -1055,125 +1071,48 @@ struct WorkoutPlanCard: View {
     let onRename: (String) -> Void
     let onPlayVideos: ([ClientVideo]) -> Void
     let onRecordForExercise: (Exercise) -> Void
+    let onReorder: ([Exercise]) -> Void
 
     @State private var showRenameSheet = false
     @State private var renameText = ""
 
+    @State private var isSwiped = false
+    @State private var isReordering = false
+
+    @State private var draggingId: String? = nil
+    @State private var dragSourceIndex: Int? = nil
+    @State private var dragTargetIndex: Int? = nil
+    @State private var dragOffsetY: CGFloat = 0
+    @State private var rowHeight: CGFloat = 54
+
+    private static let swipeRevealWidth: CGFloat = 84
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Plan header
-            HStack {
-                Image(systemName: "dumbbell.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.neonPink)
-                Text(workout.name)
-                    .font(.body(14, weight: .bold))
+        ZStack(alignment: .trailing) {
+            if !isReordering {
+                Button { enterReorderMode() } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Reorder")
+                            .font(.mono(9, weight: .semibold))
+                    }
                     .foregroundStyle(.white)
-                Button {
-                    renameText = workout.name
-                    showRenameSheet = true
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.white.opacity(0.35))
-                        .padding(6)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .frame(width: Self.swipeRevealWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(Color.neonCyan.opacity(0.85))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
-                Spacer()
-                TagChip(label: "\(workout.exercises.count) exercises")
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(Color.neonPink.opacity(0.08))
-            .overlay(
-                UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0,
-                                       bottomTrailingRadius: 0, topTrailingRadius: 14)
-                    .stroke(Color.neonPink.opacity(0.15), lineWidth: 1)
-            )
-
-            // Exercises
-            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
-                let linkedVideos = ex.videoIds.compactMap { id in videos.first(where: { $0.id == id }) }
-                let isLast = i == workout.exercises.count - 1
-                HStack(spacing: 12) {
-                    NumberBadge(number: i + 1)
-
-                    Button { onEditExercise(ex) } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
-                            Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
-                        }
-                    }
-                    .buttonStyle(.plain)
-
-                    Spacer()
-
-                    if !linkedVideos.isEmpty {
-                        let anyProcessing = linkedVideos.contains { $0.isProcessing }
-                        let readyVideos = linkedVideos.filter { !$0.isProcessing }
-                        if anyProcessing {
-                            ProgressView()
-                                .tint(Color.neonCyan)
-                                .scaleEffect(0.75)
-                                .padding(.horizontal, 7).padding(.vertical, 5)
-                                .background(Color.neonCyan.opacity(0.08))
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                        } else if !readyVideos.isEmpty {
-                            Button { onPlayVideos(readyVideos) } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: readyVideos.count > 1 ? "play.square.stack.fill" : "play.fill")
-                                        .font(.system(size: readyVideos.count > 1 ? 11 : 9))
-                                    if readyVideos.count > 1 {
-                                        Text("\(readyVideos.count)").font(.mono(9))
-                                    }
-                                }
-                                .foregroundStyle(Color.neonCyan)
-                                .padding(.horizontal, 7).padding(.vertical, 5)
-                                .background(Color.neonCyan.opacity(0.12))
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
-                    Button { onRecordForExercise(ex) } label: {
-                        Image(systemName: "video.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.neonPink)
-                            .padding(.horizontal, 7).padding(.vertical, 5)
-                            .background(Color.neonPink.opacity(0.12))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 14).padding(.vertical, 12)
-                .background(Color.white.opacity(0.04))
-                .overlay(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 0,
-                        bottomLeadingRadius: isLast ? 14 : 0,
-                        bottomTrailingRadius: isLast ? 14 : 0,
-                        topTrailingRadius: 0
-                    )
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
+                .opacity(isSwiped ? 1 : 0)
+                .allowsHitTesting(isSwiped)
             }
 
-            // Add exercise
-            Button(action: onAddExercise) {
-                Text("+ Add Exercise")
-                    .font(.mono(11))
-                    .foregroundStyle(Color.neonCyan)
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.horizontal, 14).padding(.vertical, 8)
+            swipableCard
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .onPreferenceChange(WorkoutRowHeightKey.self) { newValue in
+            if newValue > 0 { rowHeight = newValue }
+        }
         .sheet(isPresented: $showRenameSheet) {
             DarkSheet(title: "Rename Plan") {
                 VStack(spacing: 16) {
@@ -1194,7 +1133,317 @@ struct WorkoutPlanCard: View {
             }
         }
     }
+
+    // MARK: Card content
+
+    @ViewBuilder
+    private var swipableCard: some View {
+        let card = cardContent
+            .disabled(isSwiped)
+            .overlay {
+                if isSwiped {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                isSwiped = false
+                            }
+                        }
+                }
+            }
+            .offset(x: isReordering ? 0 : (isSwiped ? -Self.swipeRevealWidth : 0))
+            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isSwiped)
+
+        if isReordering {
+            card
+        } else {
+            card.highPriorityGesture(cardSwipeGesture())
+        }
+    }
+
+    private var cardContent: some View {
+        VStack(spacing: 0) {
+            planHeader
+
+            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
+                exerciseRow(index: i, exercise: ex, isLast: i == workout.exercises.count - 1)
+            }
+
+            if !isReordering {
+                Button(action: onAddExercise) {
+                    Text("+ Add Exercise")
+                        .font(.mono(11))
+                        .foregroundStyle(Color.neonCyan)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+            }
+        }
+        .background(Color(red: 0.06, green: 0.06, blue: 0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    // MARK: Plan header
+
+    private var planHeader: some View {
+        HStack {
+            Image(systemName: "dumbbell.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.neonPink)
+            Text(workout.name)
+                .font(.body(14, weight: .bold))
+                .foregroundStyle(.white)
+            if !isReordering {
+                Button {
+                    renameText = workout.name
+                    showRenameSheet = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.35))
+                        .padding(6)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+            if isReordering {
+                Button { exitReorderMode() } label: {
+                    Text("Done")
+                        .font(.mono(11, weight: .semibold))
+                        .foregroundStyle(Color.neonCyan)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Color.neonCyan.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.30), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            } else {
+                TagChip(label: "\(workout.exercises.count) exercises")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.neonPink.opacity(0.08))
+        .overlay(
+            UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0,
+                                   bottomTrailingRadius: 0, topTrailingRadius: 14)
+                .stroke(Color.neonPink.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    // MARK: Exercise row
+
+    @ViewBuilder
+    private func exerciseRow(index i: Int, exercise ex: Exercise, isLast: Bool) -> some View {
+        let isBeingDragged = draggingId == ex.id
+        let yOffset = rowOffsetY(forRowAt: i)
+
+        let row = rowContent(index: i, exercise: ex, isLast: isLast)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: WorkoutRowHeightKey.self, value: proxy.size.height)
+                }
+            )
+            .offset(y: yOffset)
+            .scaleEffect(isBeingDragged ? 1.03 : 1.0)
+            .shadow(color: isBeingDragged ? .black.opacity(0.45) : .clear, radius: 10, x: 0, y: 4)
+            .zIndex(isBeingDragged ? 1 : 0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.85), value: dragTargetIndex)
+            .animation(.spring(response: 0.25, dampingFraction: 0.85), value: dragOffsetY)
+
+        if isReordering {
+            row.gesture(reorderGesture(index: i, exerciseId: ex.id))
+        } else {
+            row
+        }
+    }
+
+    @ViewBuilder
+    private func rowContent(index i: Int, exercise ex: Exercise, isLast: Bool) -> some View {
+        let linkedVideos = ex.videoIds.compactMap { id in videos.first(where: { $0.id == id }) }
+        HStack(spacing: 12) {
+            NumberBadge(number: i + 1)
+
+            Button { onEditExercise(ex) } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
+                    Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .allowsHitTesting(!isReordering)
+
+            if isReordering {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(Color.white.opacity(0.08))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                if !linkedVideos.isEmpty {
+                    let anyProcessing = linkedVideos.contains { $0.isProcessing }
+                    let readyVideos = linkedVideos.filter { !$0.isProcessing }
+                    if anyProcessing {
+                        ProgressView()
+                            .tint(Color.neonCyan)
+                            .scaleEffect(0.75)
+                            .padding(.horizontal, 7).padding(.vertical, 5)
+                            .background(Color.neonCyan.opacity(0.08))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    } else if !readyVideos.isEmpty {
+                        Button { onPlayVideos(readyVideos) } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: readyVideos.count > 1 ? "play.square.stack.fill" : "play.fill")
+                                    .font(.system(size: readyVideos.count > 1 ? 11 : 9))
+                                if readyVideos.count > 1 {
+                                    Text("\(readyVideos.count)").font(.mono(9))
+                                }
+                            }
+                            .foregroundStyle(Color.neonCyan)
+                            .padding(.horizontal, 7).padding(.vertical, 5)
+                            .background(Color.neonCyan.opacity(0.12))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Button { onRecordForExercise(ex) } label: {
+                    Image(systemName: "video.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.neonPink)
+                        .padding(.horizontal, 7).padding(.vertical, 5)
+                        .background(Color.neonPink.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Color.white.opacity(0.04))
+        .overlay(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 0,
+                bottomLeadingRadius: isLast ? 14 : 0,
+                bottomTrailingRadius: isLast ? 14 : 0,
+                topTrailingRadius: 0
+            )
+            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    // MARK: Gestures
+
+    private func cardSwipeGesture() -> some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onChanged { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                if value.translation.width < -24 {
+                    if !isSwiped { isSwiped = true }
+                } else if value.translation.width > 24 {
+                    if isSwiped { isSwiped = false }
+                }
+            }
+            .onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                if value.translation.width < -40 {
+                    isSwiped = true
+                } else if value.translation.width > 0 {
+                    isSwiped = false
+                }
+            }
+    }
+
+    private func reorderGesture(index i: Int, exerciseId: String) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.25)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                switch value {
+                case .first:
+                    break
+                case .second(_, let dragValue):
+                    if draggingId == nil {
+                        draggingId = exerciseId
+                        dragSourceIndex = i
+                        dragTargetIndex = i
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    guard let dragValue else { return }
+                    dragOffsetY = dragValue.translation.height
+                    let stepped = Int((dragValue.translation.height / max(rowHeight, 1)).rounded())
+                    let candidate = max(0, min(workout.exercises.count - 1, i + stepped))
+                    if candidate != dragTargetIndex {
+                        dragTargetIndex = candidate
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    }
+                }
+            }
+            .onEnded { _ in
+                let src = dragSourceIndex
+                let tgt = dragTargetIndex
+                draggingId = nil
+                dragSourceIndex = nil
+                dragTargetIndex = nil
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    dragOffsetY = 0
+                }
+                guard let src, let tgt, src != tgt,
+                      workout.exercises.indices.contains(src) else { return }
+                var newOrder = workout.exercises
+                let moved = newOrder.remove(at: src)
+                let clampedTarget = max(0, min(newOrder.count, tgt))
+                newOrder.insert(moved, at: clampedTarget)
+                onReorder(newOrder)
+            }
+    }
+
+    // MARK: Helpers
+
+    private func rowOffsetY(forRowAt i: Int) -> CGFloat {
+        guard let src = dragSourceIndex, let tgt = dragTargetIndex else { return 0 }
+        if i == src { return dragOffsetY }
+        if src < tgt && i > src && i <= tgt { return -rowHeight }
+        if src > tgt && i < src && i >= tgt { return rowHeight }
+        return 0
+    }
+
+    private func enterReorderMode() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            isSwiped = false
+            isReordering = true
+        }
+    }
+
+    private func exitReorderMode() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            isReordering = false
+        }
+        draggingId = nil
+        dragSourceIndex = nil
+        dragTargetIndex = nil
+        dragOffsetY = 0
+    }
 }
+
+private struct WorkoutRowHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 54
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 { value = next }
+    }
+}
+
 
 // MARK: - VideoThumb
 
