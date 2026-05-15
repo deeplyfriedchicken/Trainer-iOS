@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		44F3D65F2FB5C6280058EB19 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 44F3D65E2FB5C6280058EB19 /* FirebaseMessaging */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		44FE46E82FA46A7000C03F71 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -29,9 +33,22 @@
 		44FE46F12FA46A7000C03F71 /* trainer-crmUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "trainer-crmUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		44F3D6642FB5C6D60058EB19 /* Exceptions for "trainer-crm" folder in "trainer-crm" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 44FE46D72FA46A6E00C03F71 /* trainer-crm */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		44FE46DA2FA46A6E00C03F71 /* trainer-crm */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				44F3D6642FB5C6D60058EB19 /* Exceptions for "trainer-crm" folder in "trainer-crm" target */,
+			);
 			path = "trainer-crm";
 			sourceTree = "<group>";
 		};
@@ -52,6 +69,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				44F3D65F2FB5C6280058EB19 /* FirebaseMessaging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +130,7 @@
 			);
 			name = "trainer-crm";
 			packageProductDependencies = (
+				44F3D65E2FB5C6280058EB19 /* FirebaseMessaging */,
 			);
 			productName = "trainer-crm";
 			productReference = 44FE46D82FA46A6E00C03F71 /* trainer-crm.app */;
@@ -195,6 +214,9 @@
 			);
 			mainGroup = 44FE46CF2FA46A6E00C03F71;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				44F3D65D2FB5C6280058EB19 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 44FE46D92FA46A6E00C03F71 /* Products */;
 			projectDirPath = "";
@@ -395,11 +417,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "trainer-crm/trainer-crm.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = U7UFFYB7X2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "trainer-crm/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = TBDFit;
 				INFOPLIST_KEY_CFBundleURLTypes = "({CFBundleURLSchemes = ('trainer-crm');})";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trainer CRM needs camera access to record client training sessions.";
@@ -433,11 +457,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "trainer-crm/trainer-crm.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = U7UFFYB7X2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "trainer-crm/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = TBDFit;
 				INFOPLIST_KEY_CFBundleURLTypes = "({CFBundleURLSchemes = ('trainer-crm');})";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trainer CRM needs camera access to record client training sessions.";
@@ -590,6 +616,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		44F3D65D2FB5C6280058EB19 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.13.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		44F3D65E2FB5C6280058EB19 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 44F3D65D2FB5C6280058EB19 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 44FE46D02FA46A6E00C03F71 /* Project object */;
 }

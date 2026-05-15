@@ -1,3 +1,4 @@
+import FirebaseMessaging
 import Foundation
 import Observation
 import UIKit
@@ -37,6 +38,7 @@ class AppStore {
             currentUser = me
             isAuthenticated = true
             await loadInitialData()
+            await registerFCMToken()
         } catch APIError.unauthorized {
             signOut()
         } catch {
@@ -44,7 +46,21 @@ class AppStore {
         }
     }
 
+    func registerFCMToken() async {
+        await withCheckedContinuation { continuation in
+            Messaging.messaging().token { token, _ in
+                if let token {
+                    Task { await self.api.registerPushToken(token) }
+                }
+                continuation.resume()
+            }
+        }
+    }
+
     func signOut() {
+        if let fcmToken = Messaging.messaging().fcmToken {
+            Task { await api.deletePushToken(fcmToken) }
+        }
         KeychainStore.delete()
         WKWebsiteDataStore.default().removeData(
             ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),

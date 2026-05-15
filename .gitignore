@@ -1,3 +1,4 @@
 xcuserdata/
 *.xcuserstate
 trainer-crm/Secrets.swift
+GoogleService-Info.plist

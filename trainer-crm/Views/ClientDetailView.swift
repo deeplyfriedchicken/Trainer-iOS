@@ -130,9 +130,13 @@ struct ClientDetailView: View {
                 await store.loadClientDetail(client.id)
             }
         }
-        .onChange(of: activeTab) { _, newTab in
-            if newTab == .chat, chatId == nil {
-                Task { await loadChat() }
+        .task(id: activeTab) {
+            guard activeTab == .chat else { return }
+            if chatId == nil { await loadChat() }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await pollChatSilently()
             }
         }
         .sheet(isPresented: $showEditExercise) {
@@ -838,7 +842,28 @@ struct ClientDetailView: View {
         }
     }
 
-    // TODO: replace with WebSocket subscription once the server supports it
+    private func pollChatSilently() async {
+        guard let id = chatId else { return }
+        do {
+            let msgs = try await APIClient.shared.fetchChatMessages(chatId: id)
+            let incoming = msgs.map { m in
+                ChatMessageItem(
+                    id: m.id,
+                    senderId: m.senderId,
+                    senderName: m.sender.name,
+                    text: m.content.text,
+                    createdAt: m.createdAt,
+                    isFromClient: m.senderId == client.id
+                )
+            }
+            let knownIds = Set(chatMessages.map(\.id))
+            let newMsgs = incoming.filter { !knownIds.contains($0.id) }
+            if !newMsgs.isEmpty { chatMessages.append(contentsOf: newMsgs) }
+        } catch {
+            // Silent failure — polling errors don't surface to the user
+        }
+    }
+
     private func refreshChat() async {
         guard !isChatRefreshing else { return }
         let start = Date()

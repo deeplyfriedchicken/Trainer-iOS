@@ -162,6 +162,26 @@ final class APIClient {
         return wrapper.data
     }
 
+    // MARK: - Push tokens
+
+    func registerPushToken(_ token: String) async {
+        struct Body: Encodable { let token: String; let platform: String }
+        let _: EmptyResponse? = try? await post(
+            "/api/push-tokens",
+            body: Body(token: token, platform: "ios")
+        )
+    }
+
+    func deletePushToken(_ token: String) async {
+        struct Body: Encodable { let token: String }
+        guard let bodyData = try? encoder.encode(Body(token: token)) else { return }
+        let _: EmptyResponse? = try? await request(
+            method: "DELETE",
+            path: "/api/push-tokens",
+            bodyData: bodyData
+        )
+    }
+
     func createWorkoutPlan(traineeId: String, name: String, exercises: [ExercisePayload] = []) async throws -> WorkoutPlanResponse {
         let wrapper: DataWrapper<WorkoutPlanResponse> = try await post(
             "/api/workout-plans",
