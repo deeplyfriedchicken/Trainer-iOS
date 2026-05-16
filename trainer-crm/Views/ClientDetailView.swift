@@ -498,7 +498,7 @@ struct ClientDetailView: View {
                                     // Version toggle
                                     HStack(spacing: 0) {
                                         Button {
-                                            withAnimation(.easeInOut(duration: 0.18)) { draftViewGroups.remove(gid) }
+                                            withAnimation(.easeInOut(duration: 0.18)) { _ = draftViewGroups.remove(gid) }
                                         } label: {
                                             HStack(spacing: 4) {
                                                 Circle().fill(Color.neonGreen).frame(width: 5, height: 5)
@@ -1897,20 +1897,8 @@ struct WorkoutSessionCard: View {
                                 }
                                 .frame(width: 70, alignment: .trailing)
                                 // weight
-                                Group {
-                                    if let w = weight, w > 0 {
-                                        let wStr = w.truncatingRemainder(dividingBy: 1) == 0
-                                            ? "\(Int(w)) lbs"
-                                            : String(format: "%.1f lbs", w)
-                                        Text(wStr)
-                                            .font(.mono(12, weight: .semibold))
-                                            .foregroundStyle(Color.white.opacity(0.75))
-                                    } else {
-                                        Text("—").font(.mono(12))
-                                            .foregroundStyle(Color.white.opacity(0.2))
-                                    }
-                                }
-                                .frame(width: 80, alignment: .trailing)
+                                weightCell(weight)
+                                    .frame(width: 80, alignment: .trailing)
                             }
                             .padding(.horizontal, 14).padding(.vertical, 10)
                             .overlay(Rectangle().fill(Color.white.opacity(0.04)).frame(height: 1), alignment: .bottom)
@@ -2000,6 +1988,22 @@ struct WorkoutSessionCard: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.09), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .sheet(isPresented: $showTagsSheet) { tagsSheet }
+    }
+
+    @ViewBuilder
+    private func weightCell(_ weight: Double?) -> some View {
+        if let w = weight, w > 0 {
+            let wStr: String = w.truncatingRemainder(dividingBy: 1) == 0
+                ? "\(Int(w)) lbs"
+                : String(format: "%.1f lbs", w)
+            Text(wStr)
+                .font(.mono(12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.75))
+        } else {
+            Text("—")
+                .font(.mono(12))
+                .foregroundStyle(Color.white.opacity(0.2))
+        }
     }
 
     private var tagsSheet: some View {
