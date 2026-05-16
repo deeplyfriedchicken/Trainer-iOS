@@ -45,7 +45,15 @@ struct ContentView: View {
             .allowsHitTesting(toastMessage != nil)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            AppTabBar(selected: $selectedTab)
+            if !store.isShowingRecording {
+                AppTabBar(selected: $selectedTab)
+            }
+        }
+        .onAppear {
+            // Lock portrait for the main app; RecordingView will unlock landscape on appear.
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { _ in }
+            }
         }
         .onChange(of: store.error) { _, error in
             guard let error else { return }

@@ -18,6 +18,7 @@ class AppStore {
     var refreshMessage: String? = nil
 
     var uploadTasks: [UploadTask] = []
+    var isShowingRecording = false
 
     var feedVideos: [VideoFeedItem] = []
     var isFeedLoading: Bool = false
