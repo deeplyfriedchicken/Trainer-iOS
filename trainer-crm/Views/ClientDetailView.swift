@@ -473,13 +473,12 @@ struct ClientDetailView: View {
         let published = plans.first(where: { $0.isPublished })
         let showingDraft = groupId.map { draftViewGroups.contains($0) } ?? false
         let activePlan = showingDraft ? (draft ?? published) : (published ?? draft)
-        guard let activePlan else { return AnyView(EmptyView()) }
 
+        if let activePlan {
         let hasBoth = draft != nil && published != nil
         let isDraft = activePlan.isDraft
 
-        return AnyView(
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
                 // Hero card
                 VStack(spacing: 0) {
                     // Header
@@ -529,8 +528,8 @@ struct ClientDetailView: View {
                                         .buttonStyle(.plain)
                                     }
                                     .padding(2)
-                                    .background(Color.black.opacity(0.3))
-                                    .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1))
+                                    .background(Color.black.opacity(0.3) as Color)
+                                    .overlay(Capsule().stroke(Color.white.opacity(0.08) as Color, lineWidth: 1))
                                     .clipShape(Capsule())
                                 }
                             }
@@ -627,7 +626,7 @@ struct ClientDetailView: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 20))
             }
-        )
+        }
     }
 
     @ViewBuilder
@@ -1900,8 +1899,10 @@ struct WorkoutSessionCard: View {
                                 // weight
                                 Group {
                                     if let w = weight, w > 0 {
-                                        Text(w.truncatingRemainder(dividingBy: 1) == 0
-                                             ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w))
+                                        let wStr = w.truncatingRemainder(dividingBy: 1) == 0
+                                            ? "\(Int(w)) lbs"
+                                            : String(format: "%.1f lbs", w)
+                                        Text(wStr)
                                             .font(.mono(12, weight: .semibold))
                                             .foregroundStyle(Color.white.opacity(0.75))
                                     } else {
