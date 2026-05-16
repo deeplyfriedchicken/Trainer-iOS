@@ -582,7 +582,7 @@ struct ClientDetailView: View {
                             .buttonStyle(.plain)
                         } else if let gid = groupId, draft == nil {
                             Button {
-                                Task { await store.createDraftPlan(groupId: gid, fromPlanId: activePlan.id, clientId: client.id) }
+                                Task { await store.createDraftPlan(groupId: gid, traineeId: client.id, name: activePlan.name + " (Draft)", clientId: client.id) }
                             } label: {
                                 Label("New Draft", systemImage: "pencil")
                                     .font(.system(size: 12, weight: .semibold))
@@ -742,7 +742,7 @@ struct ClientDetailView: View {
                         let p = plan
                         planToPublish = nil
                         guard let gid = p.groupId else { return }
-                        Task { await store.publishWorkoutPlan(groupId: gid, draftPlanId: p.id, clientId: client.id) }
+                        Task { await store.publishWorkoutPlan(groupId: gid, plan: p, clientId: client.id) }
                     } label: {
                         Text("Publish Now")
                             .font(.system(size: 13, weight: .semibold))

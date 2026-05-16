@@ -224,19 +224,22 @@ final class APIClient {
         let _: EmptyResponse = try await put("/api/workouts/\(workoutId)/tags", body: Body(tagIds: tagIds))
     }
 
-    func publishWorkoutPlan(groupId: String, planId: String) async throws {
-        struct Body: Encodable { let planId: String }
-        let _: EmptyResponse = try await put(
-            "/api/workout-plan-groups/\(groupId)/current-version",
-            body: Body(planId: planId)
+    func publishWorkoutPlan(groupId: String, name: String, exercises: [ExercisePayload]) async throws -> WorkoutPlanDetailResponse {
+        struct Body: Encodable {
+            let name: String
+            let exercises: [ExercisePayload]
+        }
+        let wrapper: DataWrapper<WorkoutPlanDetailResponse> = try await post(
+            "/api/workout-plan-groups/\(groupId)/publish",
+            body: Body(name: name, exercises: exercises)
         )
+        return wrapper.data
     }
 
-    func createDraftPlan(groupId: String, fromPlanId: String) async throws -> WorkoutPlanDetailResponse {
-        struct Body: Encodable { let fromPlanId: String }
-        let wrapper: DataWrapper<WorkoutPlanDetailResponse> = try await post(
-            "/api/workout-plan-groups/\(groupId)/draft",
-            body: Body(fromPlanId: fromPlanId)
+    func createDraftInGroup(groupId: String, traineeId: String, name: String, exercises: [ExercisePayload]) async throws -> WorkoutPlanResponse {
+        let wrapper: DataWrapper<WorkoutPlanResponse> = try await post(
+            "/api/workout-plans",
+            body: WorkoutPlanCreateBody(traineeId: traineeId, name: name, exercises: exercises, workoutPlanGroupId: groupId)
         )
         return wrapper.data
     }
@@ -504,6 +507,7 @@ struct WorkoutSessionResponse: Decodable, Identifiable, Sendable {
     let workoutPlan: WorkoutPlanNestedResponse?
     let videoLinks: [VideoLinkResponse]?
     let exerciseLinks: [WorkoutExerciseLinkResponse]?
+    let sets: [WorkoutSetResponse]?
     let workoutTags: [WorkoutTagEntryWorkoutResponse]?
     let durationSeconds: Int?
     let preSessionEnergy: Int?
@@ -532,7 +536,15 @@ struct ExerciseSetLogResponse: Decodable, Sendable {
 struct WorkoutExerciseLinkResponse: Decodable, Sendable {
     let exerciseId: String
     let exercise: WorkoutExerciseNestedResponse?
-    let setsData: [ExerciseSetLogResponse]?
+}
+
+struct WorkoutSetResponse: Decodable, Sendable {
+    let exerciseId: String
+    let position: Int
+    let reps: Int?
+    let durationSeconds: Int?
+    let weightLbs: Double?
+    let completed: Bool
 }
 
 struct WorkoutExerciseNestedResponse: Decodable, Sendable {
@@ -557,6 +569,7 @@ struct DirectVideoResponse: Decodable, Sendable {
 struct WorkoutPlanDetailResponse: Decodable, Identifiable, Sendable {
     let id: String
     let name: String
+    let workoutPlanGroupId: String?
     let versionStatus: String?
     let versionNumber: Int?
     let exercises: [ExerciseDetailResponse]?
@@ -619,6 +632,14 @@ struct WorkoutPlanCreateBody: Encodable, Sendable {
     let traineeId: String
     let name: String
     let exercises: [ExercisePayload]
+    let workoutPlanGroupId: String?
+
+    init(traineeId: String, name: String, exercises: [ExercisePayload], workoutPlanGroupId: String? = nil) {
+        self.traineeId = traineeId
+        self.name = name
+        self.exercises = exercises
+        self.workoutPlanGroupId = workoutPlanGroupId
+    }
 }
 
 // MARK: - Video types
