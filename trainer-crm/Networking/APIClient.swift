@@ -202,6 +202,28 @@ final class APIClient {
         return wrapper.data
     }
 
+    func fetchWorkoutPlanGroups(traineeId: String) async throws -> [WorkoutPlanGroupResponse] {
+        let wrapper: DataWrapper<[WorkoutPlanGroupResponse]> = try await get(
+            "/api/workout-plan-groups?traineeId=\(traineeId)"
+        )
+        return wrapper.data
+    }
+
+    func fetchWorkoutPlan(id: String) async throws -> WorkoutPlanDetailResponse {
+        let wrapper: DataWrapper<WorkoutPlanDetailResponse> = try await get("/api/workout-plans/\(id)")
+        return wrapper.data
+    }
+
+    func fetchAvailableWorkoutTags() async throws -> [WorkoutTagResponse] {
+        let wrapper: DataWrapper<[WorkoutTagResponse]> = try await get("/api/workout-tags")
+        return wrapper.data
+    }
+
+    func setWorkoutTags(workoutId: String, tagIds: [String]) async throws {
+        struct Body: Encodable { let tagIds: [String] }
+        let _: EmptyResponse = try await put("/api/workouts/\(workoutId)/tags", body: Body(tagIds: tagIds))
+    }
+
     func fetchVideos(limit: Int = 20, offset: Int = 0) async throws -> [VideoListItemResponse] {
         let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(
             "/api/videos?limit=\(limit)&offset=\(offset)&status=ready"
@@ -395,6 +417,21 @@ struct TrainerResponse: Decodable, Identifiable, Sendable {
     let createdAt: Date?
 }
 
+struct WorkoutPlanGroupResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let currentVersionId: String?
+    let currentVersion: WorkoutPlanVersionSummaryResponse?
+}
+
+struct WorkoutPlanVersionSummaryResponse: Decodable, Sendable {
+    let id: String
+    let name: String
+    let versionNumber: Int?
+    let versionStatus: String?
+    let occurredAt: Date?
+}
+
 struct WorkoutPlanResponse: Decodable, Identifiable, Sendable {
     let id: String
     let name: String
@@ -413,6 +450,16 @@ struct ExerciseResponse: Decodable, Identifiable, Sendable {
     let durationSeconds: Int?
     let weightLbs: Double?
     let comment: String?
+    let isHidden: Bool?
+}
+
+struct WorkoutTagResponse: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+}
+
+struct WorkoutTagEntryWorkoutResponse: Decodable, Sendable {
+    let tag: WorkoutTagResponse
 }
 
 struct TraineeDetailResponse: Decodable, Sendable {
@@ -430,6 +477,7 @@ struct WorkoutSessionResponse: Decodable, Identifiable, Sendable {
     let workoutPlan: WorkoutPlanNestedResponse?
     let videoLinks: [VideoLinkResponse]?
     let exerciseLinks: [WorkoutExerciseLinkResponse]?
+    let workoutTags: [WorkoutTagEntryWorkoutResponse]?
 }
 
 struct WorkoutPlanNestedResponse: Decodable, Sendable {
@@ -485,6 +533,7 @@ struct ExerciseDetailResponse: Decodable, Identifiable, Sendable {
     let reps: Int?
     let durationSeconds: Int?
     let comment: String?
+    let isHidden: Bool?
     let videoLinks: [VideoLinkResponse]?
 }
 
@@ -508,9 +557,10 @@ struct ExercisePayload: Encodable, Sendable {
     let durationSeconds: Int?
     let comment: String?
     let videoIds: [String]?
+    let isHidden: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, name, type, sets, reps, durationSeconds, comment, videoIds
+        case id, name, type, sets, reps, durationSeconds, comment, videoIds, isHidden
     }
 
     func encode(to encoder: Encoder) throws {
@@ -523,6 +573,7 @@ struct ExercisePayload: Encodable, Sendable {
         try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
         try container.encodeIfPresent(comment, forKey: .comment)
         try container.encodeIfPresent(videoIds, forKey: .videoIds)
+        try container.encode(isHidden, forKey: .isHidden)
     }
 }
 

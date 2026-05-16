@@ -20,6 +20,7 @@ struct ClientDetailView: View {
     @State private var editExDuration = "30"
     @State private var editExNotes = ""
     @State private var editExVideoIds: Set<String> = []
+    @State private var editExIsHidden = false
     @State private var newWorkoutName = ""
     @State private var playerItem: AVPlayerItem? = nil
     @State private var playingVideo: ClientVideo? = nil
@@ -400,8 +401,16 @@ struct ClientDetailView: View {
                 EmptyStateView(systemImage: "figure.run.circle", title: "No workouts logged yet")
             } else {
                 ForEach(client.workouts) { workout in
-                    WorkoutSessionCard(workout: workout)
-                        .padding(.horizontal, 16).padding(.bottom, 12)
+                    WorkoutSessionCard(
+                        workout: workout,
+                        onTagsUpdated: { tags in
+                            if let wi = client.workouts.firstIndex(where: { $0.id == workout.id }) {
+                                client.workouts[wi].tags = tags
+                            }
+                            Task { await store.setWorkoutTags(clientId: client.id, workoutId: workout.id, tags: tags) }
+                        }
+                    )
+                    .padding(.horizontal, 16).padding(.bottom, 12)
                 }
             }
         }
@@ -524,6 +533,7 @@ struct ClientDetailView: View {
         editExDuration = exercise?.durationSeconds.map(String.init) ?? "30"
         editExNotes = exercise?.comment ?? ""
         editExVideoIds = Set(exercise?.videoIds ?? [])
+        editExIsHidden = exercise?.isHidden ?? false
         showEditExercise = true
     }
 
@@ -545,7 +555,8 @@ struct ClientDetailView: View {
             reps: editExType == .reps ? (Int(editExReps) ?? 10) : nil,
             durationSeconds: editExType == .duration ? (Int(editExDuration) ?? 30) : nil,
             comment: editExNotes,
-            videoIds: Array(confirmedVideoIds)
+            videoIds: Array(confirmedVideoIds),
+            isHidden: editExIsHidden
         )
 
         if let editingId = editingExercise?.id,
@@ -599,6 +610,25 @@ struct ClientDetailView: View {
                         }
 
                         FormField(label: "Notes", text: $editExNotes, placeholder: "Optional notes")
+
+                        // Hidden toggle
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("HIDDEN FROM CLIENT")
+                                    .font(.mono(11, weight: .bold))
+                                    .foregroundStyle(Color.white.opacity(0.4))
+                                    .textCase(.uppercase)
+                                    .tracking(0.8)
+                                Text("Client won't see this exercise in their view")
+                                    .font(.body(11))
+                                    .foregroundStyle(Color.white.opacity(0.25))
+                            }
+                            Spacer()
+                            Toggle("", isOn: $editExIsHidden)
+                                .tint(Color.neonOrange)
+                                .labelsHidden()
+                        }
+                        .padding(.horizontal, 20)
 
                         // Video picker
                         VStack(alignment: .leading, spacing: 8) {
@@ -1294,7 +1324,14 @@ struct WorkoutPlanCard: View {
 
             Button { onEditExercise(ex) } label: {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
+                    HStack(spacing: 5) {
+                        Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
+                        if ex.isHidden {
+                            Image(systemName: "eye.slash")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.neonOrange.opacity(0.7))
+                        }
+                    }
                     Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1811,6 +1848,12 @@ struct VideoPickerRow: View {
 
 struct WorkoutSessionCard: View {
     let workout: Workout
+    var onTagsUpdated: (([WorkoutTag]) -> Void)? = nil
+
+    @State private var showTagsSheet = false
+    @State private var availableTags: [WorkoutTag] = []
+    @State private var selectedTagIds: Set<String> = []
+    @State private var isLoadingTags = false
 
     private var dateString: String {
         guard let d = workout.occurredAt else { return "Unknown date" }
@@ -1837,8 +1880,8 @@ struct WorkoutSessionCard: View {
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(Color.neonCyan.opacity(0.06))
             .overlay(
-                UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: workout.exercises.isEmpty ? 14 : 0,
-                                       bottomTrailingRadius: workout.exercises.isEmpty ? 14 : 0, topTrailingRadius: 14)
+                UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: workout.exercises.isEmpty && workout.tags.isEmpty && workout.comment == nil ? 14 : 0,
+                                       bottomTrailingRadius: workout.exercises.isEmpty && workout.tags.isEmpty && workout.comment == nil ? 14 : 0, topTrailingRadius: 14)
                     .stroke(Color.neonCyan.opacity(0.15), lineWidth: 1)
             )
 
@@ -1911,6 +1954,57 @@ struct WorkoutSessionCard: View {
                 )
             }
 
+            // Tags row
+            let hasComment = workout.comment.map { !$0.isEmpty } ?? false
+            let isTagsLast = !hasComment
+            HStack(spacing: 6) {
+                Image(systemName: "tag")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.white.opacity(0.3))
+                if workout.tags.isEmpty {
+                    Text("No tags")
+                        .font(.mono(10))
+                        .foregroundStyle(Color.white.opacity(0.2))
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(workout.tags) { tag in
+                                Text(tag.name)
+                                    .font(.mono(10))
+                                    .foregroundStyle(Color.neonCyan.opacity(0.8))
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.neonCyan.opacity(0.08))
+                                    .overlay(Capsule().stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                }
+                Spacer()
+                if onTagsUpdated != nil {
+                    Button {
+                        selectedTagIds = Set(workout.tags.map(\.id))
+                        showTagsSheet = true
+                    } label: {
+                        Text("Edit")
+                            .font(.mono(10, weight: .semibold))
+                            .foregroundStyle(Color.neonCyan)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Color.white.opacity(0.02))
+            .overlay(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 0,
+                    bottomLeadingRadius: isTagsLast ? 14 : 0,
+                    bottomTrailingRadius: isTagsLast ? 14 : 0,
+                    topTrailingRadius: 0
+                )
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+            )
+
             if let comment = workout.comment, !comment.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "text.bubble").font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.3))
@@ -1927,6 +2021,66 @@ struct WorkoutSessionCard: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 14))
+        .sheet(isPresented: $showTagsSheet) { tagsSheet }
+    }
+
+    private var tagsSheet: some View {
+        DarkSheet(title: "Workout Tags") {
+            VStack(spacing: 0) {
+                if isLoadingTags {
+                    ProgressView().tint(Color.neonCyan).padding(.vertical, 32)
+                } else if availableTags.isEmpty {
+                    Text("No tags available")
+                        .font(.body(13))
+                        .foregroundStyle(Color.white.opacity(0.3))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 32)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(availableTags) { tag in
+                                Button {
+                                    if selectedTagIds.contains(tag.id) { selectedTagIds.remove(tag.id) }
+                                    else { selectedTagIds.insert(tag.id) }
+                                } label: {
+                                    HStack {
+                                        Text(tag.name)
+                                            .font(.body(14))
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        Image(systemName: selectedTagIds.contains(tag.id) ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 18))
+                                            .foregroundStyle(selectedTagIds.contains(tag.id) ? Color.neonCyan : Color.white.opacity(0.25))
+                                    }
+                                    .padding(.horizontal, 20).padding(.vertical, 14)
+                                    .background(selectedTagIds.contains(tag.id) ? Color.neonCyan.opacity(0.06) : Color.clear)
+                                }
+                                .buttonStyle(.plain)
+                                Divider().background(Color.white.opacity(0.06)).padding(.horizontal, 20)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 320)
+                }
+
+                HStack(spacing: 10) {
+                    PillButton(title: "Cancel", style: .secondary, fullWidth: true) { showTagsSheet = false }
+                    PillButton(title: "Save Tags", style: .primary, fullWidth: true) {
+                        let saved = availableTags.filter { selectedTagIds.contains($0.id) }
+                        showTagsSheet = false
+                        onTagsUpdated?(saved)
+                    }
+                }
+                .padding(.horizontal, 20).padding(.bottom, 24).padding(.top, 12)
+            }
+        }
+        .task {
+            guard availableTags.isEmpty else { return }
+            isLoadingTags = true
+            defer { isLoadingTags = false }
+            availableTags = (try? await APIClient.shared.fetchAvailableWorkoutTags())?
+                .map { WorkoutTag(id: $0.id, name: $0.name) } ?? []
+        }
     }
 }
 

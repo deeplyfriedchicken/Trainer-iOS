@@ -129,16 +129,37 @@ class AppStore {
     }
 
     func loadClientDetail(_ clientId: String, showRefreshToast: Bool = false) async {
-        let detail: TraineeDetailResponse
-        do {
-            detail = try await api.fetchTrainee(id: clientId)
-        } catch {
-            self.error = (error as? APIError) ?? .networkError(error)
+        async let detailResult = try? api.fetchTrainee(id: clientId)
+        async let groupsResult = try? api.fetchWorkoutPlanGroups(traineeId: clientId)
+
+        let detail = await detailResult
+        let groups = await groupsResult ?? []
+
+        guard detail != nil || !groups.isEmpty else {
+            self.error = .networkError(URLError(.resourceUnavailable))
             return
         }
         guard let idx = clients.firstIndex(where: { $0.id == clientId }) else { return }
 
-        clients[idx].workoutPlans = (detail.workoutPlans ?? []).map { plan in
+        // Fetch full plan detail for each group's current version, in parallel.
+        let planDetails: [WorkoutPlanDetailResponse] = await withTaskGroup(
+            of: (Int, WorkoutPlanDetailResponse?).self
+        ) { group in
+            for (i, g) in groups.enumerated() {
+                if let versionId = g.currentVersionId {
+                    group.addTask { [api] in
+                        (i, try? await api.fetchWorkoutPlan(id: versionId))
+                    }
+                }
+            }
+            var indexed: [(Int, WorkoutPlanDetailResponse)] = []
+            for await (i, plan) in group {
+                if let plan { indexed.append((i, plan)) }
+            }
+            return indexed.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+
+        clients[idx].workoutPlans = planDetails.map { plan in
             WorkoutPlan(
                 id: plan.id,
                 name: plan.name,
@@ -152,10 +173,16 @@ class AppStore {
                         reps: ex.reps,
                         durationSeconds: ex.durationSeconds,
                         comment: ex.comment ?? "",
-                        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id }
+                        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
+                        isHidden: ex.isHidden ?? false
                     )
                 }
             )
+        }
+
+        guard let detail else {
+            if showRefreshToast { refreshMessage = "Client data refreshed" }
+            return
         }
 
         clients[idx].workouts = (detail.workouts ?? []).map { w in
@@ -180,7 +207,8 @@ class AppStore {
                                            weightLbs: $0.weightLbs, completed: $0.completed ?? false)
                         }
                     )
-                }
+                },
+                tags: (w.workoutTags ?? []).map { WorkoutTag(id: $0.tag.id, name: $0.tag.name) }
             )
         }
 
@@ -196,7 +224,7 @@ class AppStore {
                                isProcessing: v.status.map { $0 != "ready" } ?? false)
         }
 
-        let linkedVideos: [ClientVideo] = (detail.workoutPlans ?? []).flatMap { plan in
+        let planLinkedVideos: [ClientVideo] = planDetails.flatMap { plan in
             let planVideos = (plan.videoLinks ?? []).compactMap { link -> ClientVideo? in
                 guard let v = link.video else { return nil }
                 return ClientVideo(id: v.id, title: v.title ?? plan.name,
@@ -227,10 +255,10 @@ class AppStore {
         }
 
         let serverIds = Set(directVideos.map(\.id))
-            .union(linkedVideos.map(\.id))
+            .union(planLinkedVideos.map(\.id))
             .union(workoutLinkedVideos.map(\.id))
         let localOnly = clients[idx].videos.filter { !serverIds.contains($0.id) }
-        let combined = directVideos + linkedVideos + workoutLinkedVideos + localOnly
+        let combined = directVideos + planLinkedVideos + workoutLinkedVideos + localOnly
         var seen = Set<String>()
         clients[idx].videos = combined.filter { seen.insert($0.id).inserted }
         if showRefreshToast { refreshMessage = "Client data refreshed" }
@@ -309,11 +337,24 @@ class AppStore {
                 reps: ex.exerciseType == .reps ? ex.reps : nil,
                 durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
                 comment: ex.comment.isEmpty ? nil : ex.comment,
-                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds
+                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds,
+                isHidden: ex.isHidden
             )
         }
         do {
             _ = try await api.updateWorkoutPlan(id: planId, name: name, exercises: payload)
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    func setWorkoutTags(clientId: String, workoutId: String, tags: [WorkoutTag]) async {
+        do {
+            try await api.setWorkoutTags(workoutId: workoutId, tagIds: tags.map(\.id))
+            guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
+                  let widx = clients[cidx].workouts.firstIndex(where: { $0.id == workoutId })
+            else { return }
+            clients[cidx].workouts[widx].tags = tags
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
         }

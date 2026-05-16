@@ -45,12 +45,18 @@ struct WorkoutPlan: Identifiable {
     var exercises: [Exercise]
 }
 
+struct WorkoutTag: Identifiable {
+    var id: String
+    var name: String
+}
+
 struct Workout: Identifiable {
     var id: String = UUID().uuidString
     var name: String
     var occurredAt: Date?
     var comment: String?
     var exercises: [Exercise]
+    var tags: [WorkoutTag] = []
 }
 
 enum ExerciseType: String, CaseIterable {
@@ -74,6 +80,7 @@ struct Exercise: Identifiable {
     var comment: String = ""
     var videoIds: [String] = []
     var setsData: [ExerciseSetLog] = []
+    var isHidden: Bool = false
 
     var displaySets: String {
         switch exerciseType {
