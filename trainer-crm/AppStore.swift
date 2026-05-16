@@ -143,8 +143,9 @@ class AppStore {
 
         // Fetch full plan detail for each group — both published (currentVersionId) and
         // draft (latestDraftId) versions in parallel. Each group may contribute 1–2 plans.
-        let planDetails: [WorkoutPlan] = await withTaskGroup(
-            of: [(Int, WorkoutPlanDetailResponse, String, Bool)].self
+        typealias RawPlanTuple = (sortKey: Int, detail: WorkoutPlanDetailResponse, groupId: String, isDraft: Bool)
+        let rawPlanDetails: [RawPlanTuple] = await withTaskGroup(
+            of: [RawPlanTuple].self
         ) { taskGroup in
             for (i, g) in groups.enumerated() {
                 let gid = g.id
@@ -154,7 +155,6 @@ class AppStore {
                         return [(i, p, gid, false)]
                     }
                 }
-                // Fetch draft only if it's distinct from the published version
                 if let dId = g.latestDraftId, dId != g.currentVersionId {
                     taskGroup.addTask { [api] in
                         guard let p = try? await api.fetchWorkoutPlan(id: dId) else { return [] }
@@ -162,36 +162,34 @@ class AppStore {
                     }
                 }
             }
-            var all: [(Int, WorkoutPlanDetailResponse, String, Bool)] = []
+            var all: [RawPlanTuple] = []
             for await results in taskGroup { all.append(contentsOf: results) }
-            return all
-                .sorted { lhs, rhs in lhs.0 != rhs.0 ? lhs.0 < rhs.0 : !lhs.3 }
-                .map { (_, plan, gid, isDraft) in
-                    WorkoutPlan(
-                        id: plan.id,
-                        groupId: gid,
-                        name: plan.name,
-                        versionStatus: isDraft ? "draft" : (plan.versionStatus ?? "published"),
-                        versionNumber: plan.versionNumber ?? 1,
-                        exercises: (plan.exercises ?? []).map { ex in
-                            Exercise(
-                                id: ex.id,
-                                serverId: ex.id,
-                                name: ex.name,
-                                exerciseType: ex.type == "duration" ? .duration : .reps,
-                                sets: ex.sets ?? 1,
-                                reps: ex.reps,
-                                durationSeconds: ex.durationSeconds,
-                                comment: ex.comment ?? "",
-                                videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
-                                isHidden: ex.isHidden ?? false
-                            )
-                        }
-                    )
-                }
+            return all.sorted { lhs, rhs in lhs.sortKey != rhs.sortKey ? lhs.sortKey < rhs.sortKey : !lhs.isDraft }
         }
 
-        clients[idx].workoutPlans = planDetails
+        clients[idx].workoutPlans = rawPlanDetails.map { (_, plan, gid, isDraft) in
+            WorkoutPlan(
+                id: plan.id,
+                groupId: gid,
+                name: plan.name,
+                versionStatus: isDraft ? "draft" : (plan.versionStatus ?? "published"),
+                versionNumber: plan.versionNumber ?? 1,
+                exercises: (plan.exercises ?? []).map { ex in
+                    Exercise(
+                        id: ex.id,
+                        serverId: ex.id,
+                        name: ex.name,
+                        exerciseType: ex.type == "duration" ? .duration : .reps,
+                        sets: ex.sets ?? 1,
+                        reps: ex.reps,
+                        durationSeconds: ex.durationSeconds,
+                        comment: ex.comment ?? "",
+                        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
+                        isHidden: ex.isHidden ?? false
+                    )
+                }
+            )
+        }
 
         guard let detail else {
             if showRefreshToast { refreshMessage = "Client data refreshed" }
@@ -246,7 +244,7 @@ class AppStore {
                                isProcessing: v.status.map { $0 != "ready" } ?? false)
         }
 
-        let planLinkedVideos: [ClientVideo] = planDetails.flatMap { plan in
+        let planLinkedVideos: [ClientVideo] = rawPlanDetails.flatMap { (_, plan, _, _) in
             let planVideos = (plan.videoLinks ?? []).compactMap { link -> ClientVideo? in
                 guard let v = link.video else { return nil }
                 return ClientVideo(id: v.id, title: v.title ?? plan.name,
