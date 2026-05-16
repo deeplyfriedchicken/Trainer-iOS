@@ -623,7 +623,7 @@ struct ClientDetailView: View {
                               : LinearGradient(colors: [Color.white.opacity(0.04), Color.white.opacity(0.04)],
                                                startPoint: .top, endPoint: .bottom))
                         .overlay(RoundedRectangle(cornerRadius: 20)
-                            .stroke(isDraft ? Color.neonOrange.opacity(0.35) : Color.neonGreen.opacity(0.22), lineWidth: 1))
+                            .stroke(isDraft ? Color.neonOrange.opacity(0.35) : Color.neonGreen.opacity(0.22) as Color, lineWidth: 1))
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 20))
             }
