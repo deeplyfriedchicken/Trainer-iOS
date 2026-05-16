@@ -513,7 +513,7 @@ struct ClientDetailView: View {
                                         .buttonStyle(.plain)
 
                                         Button {
-                                            withAnimation(.easeInOut(duration: 0.18)) { draftViewGroups.insert(gid) }
+                                            withAnimation(.easeInOut(duration: 0.18)) { _ = draftViewGroups.insert(gid) }
                                         } label: {
                                             HStack(spacing: 4) {
                                                 Circle().fill(Color.neonOrange).frame(width: 5, height: 5)
@@ -1942,7 +1942,6 @@ struct WorkoutSessionCard: View {
                 }
 
                 // ── Tags row ──
-                let hasComment = workout.comment.map { !$0.isEmpty } ?? false
                 HStack(spacing: 6) {
                     Image(systemName: "tag").font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.3))
                     if workout.tags.isEmpty {
