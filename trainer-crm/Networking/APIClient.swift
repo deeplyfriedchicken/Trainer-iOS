@@ -224,6 +224,31 @@ final class APIClient {
         let _: EmptyResponse = try await put("/api/workouts/\(workoutId)/tags", body: Body(tagIds: tagIds))
     }
 
+    func publishWorkoutPlan(groupId: String, planId: String) async throws {
+        struct Body: Encodable { let planId: String }
+        let _: EmptyResponse = try await put(
+            "/api/workout-plan-groups/\(groupId)/current-version",
+            body: Body(planId: planId)
+        )
+    }
+
+    func createDraftPlan(groupId: String, fromPlanId: String) async throws -> WorkoutPlanDetailResponse {
+        struct Body: Encodable { let fromPlanId: String }
+        let wrapper: DataWrapper<WorkoutPlanDetailResponse> = try await post(
+            "/api/workout-plan-groups/\(groupId)/draft",
+            body: Body(fromPlanId: fromPlanId)
+        )
+        return wrapper.data
+    }
+
+    func updateSessionQuality(workoutId: String, sessionQuality: Int) async throws {
+        struct Body: Encodable { let sessionQuality: Int }
+        let _: EmptyResponse = try await patch(
+            "/api/workouts/\(workoutId)/session-quality",
+            body: Body(sessionQuality: sessionQuality)
+        )
+    }
+
     func fetchVideos(limit: Int = 20, offset: Int = 0) async throws -> [VideoListItemResponse] {
         let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(
             "/api/videos?limit=\(limit)&offset=\(offset)&status=ready"
@@ -422,6 +447,8 @@ struct WorkoutPlanGroupResponse: Decodable, Identifiable, Sendable {
     let name: String
     let currentVersionId: String?
     let currentVersion: WorkoutPlanVersionSummaryResponse?
+    let latestDraftId: String?
+    let latestDraft: WorkoutPlanVersionSummaryResponse?
 }
 
 struct WorkoutPlanVersionSummaryResponse: Decodable, Sendable {
@@ -478,6 +505,15 @@ struct WorkoutSessionResponse: Decodable, Identifiable, Sendable {
     let videoLinks: [VideoLinkResponse]?
     let exerciseLinks: [WorkoutExerciseLinkResponse]?
     let workoutTags: [WorkoutTagEntryWorkoutResponse]?
+    let durationSeconds: Int?
+    let preSessionEnergy: Int?
+    let preSessionSoreness: Int?
+    let preSessionStress: Int?
+    let postSessionEnergy: Int?
+    let sessionQuality: Int?
+    let traineeRating: Int?
+    let totalVolumeLbs: Double?
+    let adherencePercent: Double?
 }
 
 struct WorkoutPlanNestedResponse: Decodable, Sendable {
@@ -521,6 +557,8 @@ struct DirectVideoResponse: Decodable, Sendable {
 struct WorkoutPlanDetailResponse: Decodable, Identifiable, Sendable {
     let id: String
     let name: String
+    let versionStatus: String?
+    let versionNumber: Int?
     let exercises: [ExerciseDetailResponse]?
     let videoLinks: [VideoLinkResponse]?
 }

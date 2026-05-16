@@ -141,44 +141,57 @@ class AppStore {
         }
         guard let idx = clients.firstIndex(where: { $0.id == clientId }) else { return }
 
-        // Fetch full plan detail for each group's current version, in parallel.
-        let planDetails: [WorkoutPlanDetailResponse] = await withTaskGroup(
-            of: (Int, WorkoutPlanDetailResponse?).self
-        ) { group in
+        // Fetch full plan detail for each group — both published (currentVersionId) and
+        // draft (latestDraftId) versions in parallel. Each group may contribute 1–2 plans.
+        let planDetails: [WorkoutPlan] = await withTaskGroup(
+            of: [(Int, WorkoutPlanDetailResponse, String, Bool)].self
+        ) { taskGroup in
             for (i, g) in groups.enumerated() {
-                if let versionId = g.currentVersionId {
-                    group.addTask { [api] in
-                        (i, try? await api.fetchWorkoutPlan(id: versionId))
+                let gid = g.id
+                if let vId = g.currentVersionId {
+                    taskGroup.addTask { [api] in
+                        guard let p = try? await api.fetchWorkoutPlan(id: vId) else { return [] }
+                        return [(i, p, gid, false)]
+                    }
+                }
+                // Fetch draft only if it's distinct from the published version
+                if let dId = g.latestDraftId, dId != g.currentVersionId {
+                    taskGroup.addTask { [api] in
+                        guard let p = try? await api.fetchWorkoutPlan(id: dId) else { return [] }
+                        return [(i, p, gid, true)]
                     }
                 }
             }
-            var indexed: [(Int, WorkoutPlanDetailResponse)] = []
-            for await (i, plan) in group {
-                if let plan { indexed.append((i, plan)) }
-            }
-            return indexed.sorted { $0.0 < $1.0 }.map(\.1)
-        }
-
-        clients[idx].workoutPlans = planDetails.map { plan in
-            WorkoutPlan(
-                id: plan.id,
-                name: plan.name,
-                exercises: (plan.exercises ?? []).map { ex in
-                    Exercise(
-                        id: ex.id,
-                        serverId: ex.id,
-                        name: ex.name,
-                        exerciseType: ex.type == "duration" ? .duration : .reps,
-                        sets: ex.sets ?? 1,
-                        reps: ex.reps,
-                        durationSeconds: ex.durationSeconds,
-                        comment: ex.comment ?? "",
-                        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
-                        isHidden: ex.isHidden ?? false
+            var all: [(Int, WorkoutPlanDetailResponse, String, Bool)] = []
+            for await results in taskGroup { all.append(contentsOf: results) }
+            return all
+                .sorted { lhs, rhs in lhs.0 != rhs.0 ? lhs.0 < rhs.0 : !lhs.3 }
+                .map { (_, plan, gid, isDraft) in
+                    WorkoutPlan(
+                        id: plan.id,
+                        groupId: gid,
+                        name: plan.name,
+                        versionStatus: isDraft ? "draft" : (plan.versionStatus ?? "published"),
+                        versionNumber: plan.versionNumber ?? 1,
+                        exercises: (plan.exercises ?? []).map { ex in
+                            Exercise(
+                                id: ex.id,
+                                serverId: ex.id,
+                                name: ex.name,
+                                exerciseType: ex.type == "duration" ? .duration : .reps,
+                                sets: ex.sets ?? 1,
+                                reps: ex.reps,
+                                durationSeconds: ex.durationSeconds,
+                                comment: ex.comment ?? "",
+                                videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
+                                isHidden: ex.isHidden ?? false
+                            )
+                        }
                     )
                 }
-            )
         }
+
+        clients[idx].workoutPlans = planDetails
 
         guard let detail else {
             if showRefreshToast { refreshMessage = "Client data refreshed" }
@@ -208,7 +221,16 @@ class AppStore {
                         }
                     )
                 },
-                tags: (w.workoutTags ?? []).map { WorkoutTag(id: $0.tag.id, name: $0.tag.name) }
+                tags: (w.workoutTags ?? []).map { WorkoutTag(id: $0.tag.id, name: $0.tag.name) },
+                durationSeconds: w.durationSeconds,
+                preSessionEnergy: w.preSessionEnergy,
+                preSessionSoreness: w.preSessionSoreness,
+                preSessionStress: w.preSessionStress,
+                postSessionEnergy: w.postSessionEnergy,
+                sessionQuality: w.sessionQuality,
+                traineeRating: w.traineeRating,
+                totalVolumeLbs: w.totalVolumeLbs,
+                adherencePercent: w.adherencePercent
             )
         }
 
@@ -343,6 +365,54 @@ class AppStore {
         }
         do {
             _ = try await api.updateWorkoutPlan(id: planId, name: name, exercises: payload)
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    func publishWorkoutPlan(groupId: String, draftPlanId: String, clientId: String) async {
+        do {
+            try await api.publishWorkoutPlan(groupId: groupId, planId: draftPlanId)
+            // Refresh client data to get the updated plan states
+            await loadClientDetail(clientId)
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    func createDraftPlan(groupId: String, fromPlanId: String, clientId: String) async {
+        do {
+            let draft = try await api.createDraftPlan(groupId: groupId, fromPlanId: fromPlanId)
+            guard let cidx = clients.firstIndex(where: { $0.id == clientId }) else { return }
+            let newPlan = WorkoutPlan(
+                id: draft.id,
+                groupId: groupId,
+                name: draft.name,
+                versionStatus: "draft",
+                versionNumber: draft.versionNumber ?? 1,
+                exercises: (draft.exercises ?? []).map { ex in
+                    Exercise(
+                        id: ex.id, serverId: ex.id, name: ex.name,
+                        exerciseType: ex.type == "duration" ? .duration : .reps,
+                        sets: ex.sets ?? 1, reps: ex.reps, durationSeconds: ex.durationSeconds,
+                        comment: ex.comment ?? "", videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
+                        isHidden: ex.isHidden ?? false
+                    )
+                }
+            )
+            clients[cidx].workoutPlans.append(newPlan)
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+    }
+
+    func updateSessionQuality(clientId: String, workoutId: String, sessionQuality: Int) async {
+        do {
+            try await api.updateSessionQuality(workoutId: workoutId, sessionQuality: sessionQuality)
+            guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
+                  let widx = clients[cidx].workouts.firstIndex(where: { $0.id == workoutId })
+            else { return }
+            clients[cidx].workouts[widx].sessionQuality = sessionQuality
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
         }

@@ -573,3 +573,33 @@ struct VidPill: View {
         .clipShape(Capsule())
     }
 }
+
+// MARK: - Session Stat Box
+
+struct SessionStatBox: View {
+    let label: String
+    let value: Int
+    var color: Color = .white
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label.uppercased())
+                .font(.mono(9.5, weight: .bold))
+                .foregroundStyle(Color.white.opacity(0.45))
+                .tracking(0.08)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text("\(value)")
+                    .font(.display(22))
+                    .foregroundStyle(color)
+                Text("/10")
+                    .font(.body(12))
+                    .foregroundStyle(Color.white.opacity(0.3))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color.white.opacity(0.04))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.08), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}

@@ -41,8 +41,14 @@ struct ClientVideo: Identifiable {
 
 struct WorkoutPlan: Identifiable {
     var id: String = UUID().uuidString
+    var groupId: String? = nil
     var name: String
+    var versionStatus: String = "published"   // "draft" | "published"
+    var versionNumber: Int = 1
     var exercises: [Exercise]
+
+    var isDraft: Bool { versionStatus == "draft" }
+    var isPublished: Bool { versionStatus == "published" }
 }
 
 struct WorkoutTag: Identifiable {
@@ -57,6 +63,15 @@ struct Workout: Identifiable {
     var comment: String?
     var exercises: [Exercise]
     var tags: [WorkoutTag] = []
+    var durationSeconds: Int? = nil
+    var preSessionEnergy: Int? = nil
+    var preSessionSoreness: Int? = nil
+    var preSessionStress: Int? = nil
+    var postSessionEnergy: Int? = nil
+    var sessionQuality: Int? = nil
+    var traineeRating: Int? = nil
+    var totalVolumeLbs: Double? = nil
+    var adherencePercent: Double? = nil
 }
 
 enum ExerciseType: String, CaseIterable {

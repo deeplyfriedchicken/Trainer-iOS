@@ -12,6 +12,9 @@ struct ClientDetailView: View {
     @State private var showAddWorkout = false
     @State private var showEditExercise = false
     @State private var targetWorkoutId: String? = nil
+    @State private var draftViewGroups: Set<String> = []   // groupIds showing draft view
+    @State private var planToPublish: WorkoutPlan? = nil
+    @State private var expandedSecondaryPlanId: String? = nil
     @State private var editingExercise: Exercise? = nil
     @State private var editExName = ""
     @State private var editExType: ExerciseType = .reps
@@ -391,11 +394,9 @@ struct ClientDetailView: View {
 
     // MARK: - Workouts Tab
 
-    // MARK: - Workouts Tab
-
     private var workoutsContent: some View {
         VStack(spacing: 0) {
-            SectionHeader(title: "Workouts (\(client.workouts.count))")
+            SectionHeader(title: "WORKOUTS · \(client.workouts.count)")
 
             if client.workouts.isEmpty {
                 EmptyStateView(systemImage: "figure.run.circle", title: "No workouts logged yet")
@@ -408,9 +409,15 @@ struct ClientDetailView: View {
                                 client.workouts[wi].tags = tags
                             }
                             Task { await store.setWorkoutTags(clientId: client.id, workoutId: workout.id, tags: tags) }
+                        },
+                        onSessionQualityChanged: { q in
+                            if let wi = client.workouts.firstIndex(where: { $0.id == workout.id }) {
+                                client.workouts[wi].sessionQuality = q
+                            }
+                            Task { await store.updateSessionQuality(clientId: client.id, workoutId: workout.id, sessionQuality: q) }
                         }
                     )
-                    .padding(.horizontal, 16).padding(.bottom, 12)
+                    .padding(.horizontal, 16).padding(.bottom, 14)
                 }
             }
         }
@@ -419,67 +426,340 @@ struct ClientDetailView: View {
 
     // MARK: - Workout Plans Tab
 
+    private var planGroups: [(groupId: String?, plans: [WorkoutPlan])] {
+        var byGroup: [(String?, [WorkoutPlan])] = []
+        var seen = Set<String>()
+        var ungrouped: [WorkoutPlan] = []
+        for plan in client.workoutPlans {
+            if let gid = plan.groupId {
+                if !seen.contains(gid) {
+                    seen.insert(gid)
+                    let members = client.workoutPlans.filter { $0.groupId == gid }
+                    byGroup.append((gid, members))
+                }
+            } else {
+                ungrouped.append(plan)
+            }
+        }
+        return byGroup + ungrouped.map { (nil, [$0]) }
+    }
+
     private var workoutPlansContent: some View {
         VStack(spacing: 0) {
-            SectionHeader(title: "Workout Plans (\(client.workoutPlans.count))",
+            SectionHeader(title: "WORKOUT PLANS · \(planGroups.count)",
                           action: { showAddWorkout = true },
                           actionLabel: "+ New")
 
-            if client.workoutPlans.isEmpty {
-                Text("No workout plans yet")
-                    .font(.body(13)).foregroundStyle(Color.white.opacity(0.3))
-                    .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 40)
+            if planGroups.isEmpty {
+                EmptyStateView(systemImage: "dumbbell", title: "No workout plans yet",
+                               subtitle: "Tap + New to create the first plan")
+                    .padding(.horizontal, 16)
             } else {
-                ForEach(client.workoutPlans) { workout in
-                    WorkoutPlanCard(
-                        workout: workout,
-                        videos: client.videos,
-                        onAddExercise: {
-                            targetWorkoutId = workout.id
-                            openExerciseForm(nil)
-                        },
-                        onEditExercise: { ex in
-                            targetWorkoutId = workout.id
-                            openExerciseForm(ex)
-                        },
-                        onRename: { newName in
-                            guard let wi = client.workoutPlans.firstIndex(where: { $0.id == workout.id }) else { return }
-                            client.workoutPlans[wi].name = newName
-                            Task {
-                                await store.updateWorkoutPlan(
-                                    planId: workout.id,
-                                    clientId: client.id,
-                                    name: newName,
-                                    exercises: client.workoutPlans[wi].exercises
-                                )
-                            }
-                        },
-                        onPlayVideos: { vids in
-                            galleryVideos = vids
-                            showVideoGallery = true
-                        },
-                        onRecordForExercise: { ex in
-                            exerciseRecordTarget = (workoutId: workout.id, exerciseId: ex.id)
-                        },
-                        onReorder: { newOrder in
-                            guard let wi = client.workoutPlans.firstIndex(where: { $0.id == workout.id }) else { return }
-                            client.workoutPlans[wi].exercises = newOrder
-                            let planName = client.workoutPlans[wi].name
-                            Task {
-                                await store.updateWorkoutPlan(
-                                    planId: workout.id,
-                                    clientId: client.id,
-                                    name: planName,
-                                    exercises: newOrder
-                                )
-                            }
-                        }
-                    )
-                    .padding(.horizontal, 16).padding(.bottom, 12)
+                ForEach(planGroups, id: \.groupId) { group in
+                    planGroupCard(group.plans, groupId: group.groupId)
+                        .padding(.horizontal, 16).padding(.bottom, 14)
                 }
             }
         }
         .padding(.bottom, 16)
+        .sheet(item: $planToPublish) { plan in
+            publishConfirmSheet(plan: plan)
+        }
+    }
+
+    @ViewBuilder
+    private func planGroupCard(_ plans: [WorkoutPlan], groupId: String?) -> some View {
+        let draft = plans.first(where: { $0.isDraft })
+        let published = plans.first(where: { $0.isPublished })
+        let showingDraft = groupId.map { draftViewGroups.contains($0) } ?? false
+        let activePlan = showingDraft ? (draft ?? published) : (published ?? draft)
+        guard let activePlan else { return AnyView(EmptyView()) }
+
+        let hasBoth = draft != nil && published != nil
+        let isDraft = activePlan.isDraft
+
+        return AnyView(
+            VStack(spacing: 0) {
+                // Hero card
+                VStack(spacing: 0) {
+                    // Header
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            // Status kicker row
+                            HStack(spacing: 8) {
+                                Text(isDraft ? "DRAFT" : "PUBLISHED")
+                                    .font(.mono(9, weight: .bold))
+                                    .foregroundStyle(isDraft ? Color.neonOrange : Color.neonGreen)
+                                    .padding(.horizontal, 7).padding(.vertical, 3)
+                                    .background((isDraft ? Color.neonOrange : Color.neonGreen).opacity(0.12))
+                                    .overlay(Capsule().stroke((isDraft ? Color.neonOrange : Color.neonGreen).opacity(0.35), lineWidth: 1))
+                                    .clipShape(Capsule())
+
+                                if hasBoth, let gid = groupId {
+                                    // Version toggle
+                                    HStack(spacing: 0) {
+                                        Button {
+                                            withAnimation(.easeInOut(duration: 0.18)) { draftViewGroups.remove(gid) }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Circle().fill(Color.neonGreen).frame(width: 5, height: 5)
+                                                    .shadow(color: showingDraft ? .clear : Color.neonGreen, radius: 4)
+                                                Text("Published").font(.mono(9, weight: .bold))
+                                                    .foregroundStyle(!showingDraft ? .white : Color.white.opacity(0.4))
+                                            }
+                                            .padding(.horizontal, 8).padding(.vertical, 4)
+                                            .background(!showingDraft ? Color.white.opacity(0.08) : .clear)
+                                            .clipShape(Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Button {
+                                            withAnimation(.easeInOut(duration: 0.18)) { draftViewGroups.insert(gid) }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Circle().fill(Color.neonOrange).frame(width: 5, height: 5)
+                                                    .shadow(color: showingDraft ? Color.neonOrange : .clear, radius: 4)
+                                                Text("Draft").font(.mono(9, weight: .bold))
+                                                    .foregroundStyle(showingDraft ? .white : Color.white.opacity(0.4))
+                                            }
+                                            .padding(.horizontal, 8).padding(.vertical, 4)
+                                            .background(showingDraft ? Color.white.opacity(0.08) : .clear)
+                                            .clipShape(Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(2)
+                                    .background(Color.black.opacity(0.3))
+                                    .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1))
+                                    .clipShape(Capsule())
+                                }
+                            }
+
+                            Text(activePlan.name)
+                                .font(.display(22))
+                                .foregroundStyle(.white)
+                                .lineLimit(2)
+
+                            HStack(spacing: 6) {
+                                Text("\(activePlan.exercises.count) exercises")
+                                    .font(.mono(10.5))
+                                    .foregroundStyle(Color.white.opacity(0.42))
+                                if activePlan.versionNumber > 1 {
+                                    Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                                    Text("v\(activePlan.versionNumber)")
+                                        .font(.mono(10.5))
+                                        .foregroundStyle(Color.white.opacity(0.42))
+                                }
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
+
+                    // Exercises list
+                    if !activePlan.exercises.isEmpty {
+                        Divider().background(Color.white.opacity(0.07)).padding(.horizontal, 16)
+                        ForEach(Array(activePlan.exercises.enumerated()), id: \.element.id) { i, ex in
+                            planExerciseRow(index: i, exercise: ex, plan: activePlan)
+                        }
+                    }
+
+                    // Actions bar
+                    HStack(spacing: 8) {
+                        if isDraft {
+                            Button {
+                                planToPublish = activePlan
+                            } label: {
+                                Label("Publish…", systemImage: "checkmark.circle")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color(hex: "052e10"))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(LinearGradient(colors: [Color.neonGreen, Color(hex: "22c55e")],
+                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    .clipShape(Capsule())
+                                    .shadow(color: Color.neonGreen.opacity(0.35), radius: 8, y: 4)
+                            }
+                            .buttonStyle(.plain)
+                        } else if let gid = groupId, draft == nil {
+                            Button {
+                                Task { await store.createDraftPlan(groupId: gid, fromPlanId: activePlan.id, clientId: client.id) }
+                            } label: {
+                                Label("New Draft", systemImage: "pencil")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.neonOrange)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(Color.neonOrange.opacity(0.1))
+                                    .overlay(Capsule().stroke(Color.neonOrange.opacity(0.3), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Button {
+                            targetWorkoutId = activePlan.id
+                            openExerciseForm(nil)
+                        } label: {
+                            Label("Add Exercise", systemImage: "plus")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color.white.opacity(0.8))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 9)
+                                .background(Color.white.opacity(0.06))
+                                .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Color.black.opacity(0.18))
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(isDraft
+                              ? LinearGradient(colors: [Color.neonOrange.opacity(0.07), Color.white.opacity(0.03)],
+                                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                              : LinearGradient(colors: [Color.white.opacity(0.04), Color.white.opacity(0.04)],
+                                               startPoint: .top, endPoint: .bottom))
+                        .overlay(RoundedRectangle(cornerRadius: 20)
+                            .stroke(isDraft ? Color.neonOrange.opacity(0.35) : Color.neonGreen.opacity(0.22), lineWidth: 1))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func planExerciseRow(index i: Int, exercise ex: Exercise, plan: WorkoutPlan) -> some View {
+        let linkedVideos = ex.videoIds.compactMap { id in client.videos.first(where: { $0.id == id }) }
+        HStack(spacing: 12) {
+            NumberBadge(number: i + 1)
+
+            Button {
+                targetWorkoutId = plan.id
+                openExerciseForm(ex)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
+                        if ex.isHidden {
+                            Image(systemName: "eye.slash")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.neonOrange.opacity(0.7))
+                        }
+                    }
+                    Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if !linkedVideos.isEmpty {
+                let ready = linkedVideos.filter { !$0.isProcessing }
+                let anyProcessing = linkedVideos.contains { $0.isProcessing }
+                if anyProcessing {
+                    ProgressView().tint(Color.neonCyan).scaleEffect(0.75)
+                        .padding(.horizontal, 7).padding(.vertical, 5)
+                } else if !ready.isEmpty {
+                    Button { galleryVideos = ready; showVideoGallery = true } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: ready.count > 1 ? "play.square.stack.fill" : "play.fill")
+                                .font(.system(size: ready.count > 1 ? 11 : 9))
+                            if ready.count > 1 { Text("\(ready.count)").font(.mono(9)) }
+                        }
+                        .foregroundStyle(Color.neonCyan)
+                        .padding(.horizontal, 7).padding(.vertical, 5)
+                        .background(Color.neonCyan.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Button { exerciseRecordTarget = (workoutId: plan.id, exerciseId: ex.id) } label: {
+                Image(systemName: "video.fill").font(.system(size: 10))
+                    .foregroundStyle(Color.neonPink)
+                    .padding(.horizontal, 7).padding(.vertical, 5)
+                    .background(Color.neonPink.opacity(0.12))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(Color.white.opacity(0.03))
+        .overlay(Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1), alignment: .top)
+    }
+
+    @ViewBuilder
+    private func publishConfirmSheet(plan: WorkoutPlan) -> some View {
+        DarkSheet(title: "Publish this draft?", detents: [.medium]) {
+            VStack(spacing: 16) {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Plan").font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                        Spacer()
+                        Text(plan.name).font(.body(13, weight: .semibold)).foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider().background(Color.white.opacity(0.06))
+                    HStack {
+                        Text("Exercises").font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                        Spacer()
+                        Text("\(plan.exercises.count)").font(.body(13, weight: .semibold)).foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider().background(Color.white.opacity(0.06))
+                    HStack {
+                        Text("Status change").font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Text("Draft").font(.mono(11, weight: .bold)).foregroundStyle(Color.neonOrange)
+                            Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.4))
+                            Text("Published").font(.mono(11, weight: .bold)).foregroundStyle(Color.neonGreen)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                }
+                .background(Color.black.opacity(0.25))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 20)
+
+                Text("Publishing will make this the active plan for the client.")
+                    .font(.body(13))
+                    .foregroundStyle(Color.white.opacity(0.45))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+
+                HStack(spacing: 10) {
+                    PillButton(title: "Keep as Draft", style: .secondary, fullWidth: true) {
+                        planToPublish = nil
+                    }
+                    Button {
+                        let p = plan
+                        planToPublish = nil
+                        guard let gid = p.groupId else { return }
+                        Task { await store.publishWorkoutPlan(groupId: gid, draftPlanId: p.id, clientId: client.id) }
+                    } label: {
+                        Text("Publish Now")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(hex: "052e10"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(LinearGradient(colors: [Color.neonGreen, Color(hex: "22c55e")],
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .clipShape(Capsule())
+                            .shadow(color: Color.neonGreen.opacity(0.4), radius: 8, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20).padding(.bottom, 16)
+            }
+        }
     }
 
     // MARK: - Videos Tab
@@ -1116,396 +1396,6 @@ struct ChatBubbleView: View {
     }
 }
 
-// MARK: - WorkoutPlanCard
-
-struct WorkoutPlanCard: View {
-    let workout: WorkoutPlan
-    let videos: [ClientVideo]
-    let onAddExercise: () -> Void
-    let onEditExercise: (Exercise) -> Void
-    let onRename: (String) -> Void
-    let onPlayVideos: ([ClientVideo]) -> Void
-    let onRecordForExercise: (Exercise) -> Void
-    let onReorder: ([Exercise]) -> Void
-
-    @State private var showRenameSheet = false
-    @State private var renameText = ""
-
-    @State private var isSwiped = false
-    @State private var isReordering = false
-
-    @State private var draggingId: String? = nil
-    @State private var dragSourceIndex: Int? = nil
-    @State private var dragTargetIndex: Int? = nil
-    @State private var dragOffsetY: CGFloat = 0
-    @State private var rowHeight: CGFloat = 54
-
-    private static let swipeRevealWidth: CGFloat = 84
-
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            if !isReordering {
-                Button { enterReorderMode() } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text("Reorder")
-                            .font(.mono(9, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(width: Self.swipeRevealWidth)
-                    .frame(maxHeight: .infinity)
-                    .background(Color.neonCyan.opacity(0.85))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-                .buttonStyle(.plain)
-                .opacity(isSwiped ? 1 : 0)
-                .allowsHitTesting(isSwiped)
-            }
-
-            swipableCard
-        }
-        .onPreferenceChange(WorkoutRowHeightKey.self) { newValue in
-            if newValue > 0 { rowHeight = newValue }
-        }
-        .sheet(isPresented: $showRenameSheet) {
-            DarkSheet(title: "Rename Plan") {
-                VStack(spacing: 16) {
-                    FormField(label: "Plan Name", text: $renameText, placeholder: "e.g. Upper Body A", clearable: true)
-                    HStack(spacing: 10) {
-                        PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
-                            showRenameSheet = false
-                        }
-                        PillButton(title: "Save", style: .primary, fullWidth: true) {
-                            let name = renameText.trimmingCharacters(in: .whitespaces)
-                            guard !name.isEmpty else { return }
-                            showRenameSheet = false
-                            onRename(name)
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                }
-            }
-        }
-    }
-
-    // MARK: Card content
-
-    @ViewBuilder
-    private var swipableCard: some View {
-        let card = cardContent
-            .disabled(isSwiped)
-            .overlay {
-                if isSwiped {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                isSwiped = false
-                            }
-                        }
-                }
-            }
-            .offset(x: isReordering ? 0 : (isSwiped ? -Self.swipeRevealWidth : 0))
-            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isSwiped)
-
-        if isReordering {
-            card
-        } else {
-            card.highPriorityGesture(cardSwipeGesture())
-        }
-    }
-
-    private var cardContent: some View {
-        VStack(spacing: 0) {
-            planHeader
-
-            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
-                exerciseRow(index: i, exercise: ex, isLast: i == workout.exercises.count - 1)
-            }
-
-            if !isReordering {
-                Button(action: onAddExercise) {
-                    Text("+ Add Exercise")
-                        .font(.mono(11))
-                        .foregroundStyle(Color.neonCyan)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.horizontal, 14).padding(.vertical, 8)
-            }
-        }
-        .background(Color(red: 0.06, green: 0.06, blue: 0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-    }
-
-    // MARK: Plan header
-
-    private var planHeader: some View {
-        HStack {
-            Image(systemName: "dumbbell.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.neonPink)
-            Text(workout.name)
-                .font(.body(14, weight: .bold))
-                .foregroundStyle(.white)
-            if !isReordering {
-                Button {
-                    renameText = workout.name
-                    showRenameSheet = true
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.white.opacity(0.35))
-                        .padding(6)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-            if isReordering {
-                Button { exitReorderMode() } label: {
-                    Text("Done")
-                        .font(.mono(11, weight: .semibold))
-                        .foregroundStyle(Color.neonCyan)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Color.neonCyan.opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.30), lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-            } else {
-                TagChip(label: "\(workout.exercises.count) exercises")
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(Color.neonPink.opacity(0.08))
-        .overlay(
-            UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0,
-                                   bottomTrailingRadius: 0, topTrailingRadius: 14)
-                .stroke(Color.neonPink.opacity(0.15), lineWidth: 1)
-        )
-    }
-
-    // MARK: Exercise row
-
-    @ViewBuilder
-    private func exerciseRow(index i: Int, exercise ex: Exercise, isLast: Bool) -> some View {
-        let isBeingDragged = draggingId == ex.id
-        let yOffset = rowOffsetY(forRowAt: i)
-
-        let row = rowContent(index: i, exercise: ex, isLast: isLast)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .preference(key: WorkoutRowHeightKey.self, value: proxy.size.height)
-                }
-            )
-            .offset(y: yOffset)
-            .scaleEffect(isBeingDragged ? 1.03 : 1.0)
-            .shadow(color: isBeingDragged ? .black.opacity(0.45) : .clear, radius: 10, x: 0, y: 4)
-            .zIndex(isBeingDragged ? 1 : 0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.85), value: dragTargetIndex)
-            .animation(.spring(response: 0.25, dampingFraction: 0.85), value: dragOffsetY)
-
-        if isReordering {
-            row.gesture(reorderGesture(index: i, exerciseId: ex.id))
-        } else {
-            row
-        }
-    }
-
-    @ViewBuilder
-    private func rowContent(index i: Int, exercise ex: Exercise, isLast: Bool) -> some View {
-        let linkedVideos = ex.videoIds.compactMap { id in videos.first(where: { $0.id == id }) }
-        HStack(spacing: 12) {
-            NumberBadge(number: i + 1)
-
-            Button { onEditExercise(ex) } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
-                        if ex.isHidden {
-                            Image(systemName: "eye.slash")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.neonOrange.opacity(0.7))
-                        }
-                    }
-                    Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .allowsHitTesting(!isReordering)
-
-            if isReordering {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.55))
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Color.white.opacity(0.08))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.18), lineWidth: 1))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            } else {
-                if !linkedVideos.isEmpty {
-                    let anyProcessing = linkedVideos.contains { $0.isProcessing }
-                    let readyVideos = linkedVideos.filter { !$0.isProcessing }
-                    if anyProcessing {
-                        ProgressView()
-                            .tint(Color.neonCyan)
-                            .scaleEffect(0.75)
-                            .padding(.horizontal, 7).padding(.vertical, 5)
-                            .background(Color.neonCyan.opacity(0.08))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    } else if !readyVideos.isEmpty {
-                        Button { onPlayVideos(readyVideos) } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: readyVideos.count > 1 ? "play.square.stack.fill" : "play.fill")
-                                    .font(.system(size: readyVideos.count > 1 ? 11 : 9))
-                                if readyVideos.count > 1 {
-                                    Text("\(readyVideos.count)").font(.mono(9))
-                                }
-                            }
-                            .foregroundStyle(Color.neonCyan)
-                            .padding(.horizontal, 7).padding(.vertical, 5)
-                            .background(Color.neonCyan.opacity(0.12))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                Button { onRecordForExercise(ex) } label: {
-                    Image(systemName: "video.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.neonPink)
-                        .padding(.horizontal, 7).padding(.vertical, 5)
-                        .background(Color.neonPink.opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(Color.white.opacity(0.04))
-        .overlay(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 0,
-                bottomLeadingRadius: isLast ? 14 : 0,
-                bottomTrailingRadius: isLast ? 14 : 0,
-                topTrailingRadius: 0
-            )
-            .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
-    }
-
-    // MARK: Gestures
-
-    private func cardSwipeGesture() -> some Gesture {
-        DragGesture(minimumDistance: 18)
-            .onChanged { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                if value.translation.width < -24 {
-                    if !isSwiped { isSwiped = true }
-                } else if value.translation.width > 24 {
-                    if isSwiped { isSwiped = false }
-                }
-            }
-            .onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                if value.translation.width < -40 {
-                    isSwiped = true
-                } else if value.translation.width > 0 {
-                    isSwiped = false
-                }
-            }
-    }
-
-    private func reorderGesture(index i: Int, exerciseId: String) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.25)
-            .sequenced(before: DragGesture(minimumDistance: 0))
-            .onChanged { value in
-                switch value {
-                case .first:
-                    break
-                case .second(_, let dragValue):
-                    if draggingId == nil {
-                        draggingId = exerciseId
-                        dragSourceIndex = i
-                        dragTargetIndex = i
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    }
-                    guard let dragValue else { return }
-                    dragOffsetY = dragValue.translation.height
-                    let stepped = Int((dragValue.translation.height / max(rowHeight, 1)).rounded())
-                    let candidate = max(0, min(workout.exercises.count - 1, i + stepped))
-                    if candidate != dragTargetIndex {
-                        dragTargetIndex = candidate
-                        UISelectionFeedbackGenerator().selectionChanged()
-                    }
-                }
-            }
-            .onEnded { _ in
-                let src = dragSourceIndex
-                let tgt = dragTargetIndex
-                draggingId = nil
-                dragSourceIndex = nil
-                dragTargetIndex = nil
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                    dragOffsetY = 0
-                }
-                guard let src, let tgt, src != tgt,
-                      workout.exercises.indices.contains(src) else { return }
-                var newOrder = workout.exercises
-                let moved = newOrder.remove(at: src)
-                let clampedTarget = max(0, min(newOrder.count, tgt))
-                newOrder.insert(moved, at: clampedTarget)
-                onReorder(newOrder)
-            }
-    }
-
-    // MARK: Helpers
-
-    private func rowOffsetY(forRowAt i: Int) -> CGFloat {
-        guard let src = dragSourceIndex, let tgt = dragTargetIndex else { return 0 }
-        if i == src { return dragOffsetY }
-        if src < tgt && i > src && i <= tgt { return -rowHeight }
-        if src > tgt && i < src && i >= tgt { return rowHeight }
-        return 0
-    }
-
-    private func enterReorderMode() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-            isSwiped = false
-            isReordering = true
-        }
-    }
-
-    private func exitReorderMode() {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-            isReordering = false
-        }
-        draggingId = nil
-        dragSourceIndex = nil
-        dragTargetIndex = nil
-        dragOffsetY = 0
-    }
-}
-
-private struct WorkoutRowHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 54
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        let next = nextValue()
-        if next > 0 { value = next }
-    }
-}
-
 
 // MARK: - VideoThumb
 
@@ -1849,178 +1739,265 @@ struct VideoPickerRow: View {
 struct WorkoutSessionCard: View {
     let workout: Workout
     var onTagsUpdated: (([WorkoutTag]) -> Void)? = nil
+    var onSessionQualityChanged: ((Int) -> Void)? = nil
 
     @State private var showTagsSheet = false
     @State private var availableTags: [WorkoutTag] = []
     @State private var selectedTagIds: Set<String> = []
     @State private var isLoadingTags = false
+    @State private var isExpanded = true
 
     private var dateString: String {
         guard let d = workout.occurredAt else { return "Unknown date" }
         return d.formatted(.dateTime.month(.abbreviated).day().year())
     }
 
+    private var durationString: String {
+        guard let s = workout.durationSeconds, s > 0 else { return "" }
+        let h = s / 3600; let m = (s % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    }
+
+    private func statColor(_ value: Int, inverted: Bool = false) -> Color {
+        let hi = inverted ? value <= 3 : value >= 8
+        let lo = inverted ? value >= 8 : value <= 3
+        if hi { return .neonGreen }
+        if lo { return .neonRed }
+        return Color(hex: "fbbf24")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Image(systemName: "figure.run")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.neonCyan)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(workout.name)
-                        .font(.body(14, weight: .bold))
-                        .foregroundStyle(.white)
+            // ── Session Header ──
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(workout.name.uppercased())
+                        .font(.mono(10, weight: .bold))
+                        .foregroundStyle(Color.neonCyan)
+                        .tracking(0.1)
                     Text(dateString)
-                        .font(.mono(10))
-                        .foregroundStyle(Color.white.opacity(0.4))
+                        .font(.display(20))
+                        .foregroundStyle(.white)
+                    HStack(spacing: 6) {
+                        if !durationString.isEmpty {
+                            Text(durationString)
+                                .font(.mono(10.5))
+                                .foregroundStyle(Color.white.opacity(0.45))
+                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                        }
+                        Text("\(workout.exercises.count) exercises")
+                            .font(.mono(10.5))
+                            .foregroundStyle(Color.white.opacity(0.45))
+                        if let pct = workout.adherencePercent, pct > 0 {
+                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                            Text(String(format: "%.0f%% adherence", pct))
+                                .font(.mono(10.5))
+                                .foregroundStyle(Color.white.opacity(0.45))
+                        }
+                    }
                 }
                 Spacer()
-                TagChip(label: "\(workout.exercises.count) exercises")
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(Color.neonCyan.opacity(0.06))
-            .overlay(
-                UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: workout.exercises.isEmpty && workout.tags.isEmpty && workout.comment == nil ? 14 : 0,
-                                       bottomTrailingRadius: workout.exercises.isEmpty && workout.tags.isEmpty && workout.comment == nil ? 14 : 0, topTrailingRadius: 14)
-                    .stroke(Color.neonCyan.opacity(0.15), lineWidth: 1)
-            )
-
-            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
-                let isLast = i == workout.exercises.count - 1 && (workout.comment?.isEmpty != false)
-                VStack(spacing: 0) {
-                    // Exercise header row
-                    HStack(spacing: 12) {
-                        NumberBadge(number: i + 1, color: .neonCyan)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
-                            Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                // Trainer / client rating
+                if let rating = workout.sessionQuality ?? workout.traineeRating {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 1) {
+                            Text("\(rating)").font(.display(28)).foregroundStyle(.white)
+                            Text("/10").font(.body(14, weight: .semibold)).foregroundStyle(Color.white.opacity(0.35))
                         }
-                        Spacer()
+                        .lineLimit(1)
+                        Text("QUALITY").font(.mono(9, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.4))
+                            .tracking(0.1)
+                    }
+                }
+            }
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
+            .background(Color.neonCyan.opacity(0.04))
+
+            if isExpanded {
+                // ── Pre-session Stats ──
+                let hasPreStats = workout.preSessionEnergy != nil || workout.preSessionSoreness != nil || workout.preSessionStress != nil
+                if hasPreStats {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color.neonCyan).frame(width: 5, height: 5)
+                            Text("PRE-SESSION").font(.mono(10, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
+                        }
+                        HStack(spacing: 8) {
+                            if let e = workout.preSessionEnergy {
+                                SessionStatBox(label: "Energy", value: e, color: statColor(e))
+                            }
+                            if let s = workout.preSessionSoreness {
+                                SessionStatBox(label: "Soreness", value: s, color: statColor(s, inverted: true))
+                            }
+                            if let s = workout.preSessionStress {
+                                SessionStatBox(label: "Stress", value: s, color: statColor(s, inverted: true))
+                            }
+                        }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 12)
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+                }
 
-                    // Per-set rows
-                    if !ex.setsData.isEmpty {
-                        VStack(spacing: 0) {
-                            ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
-                                let isDur = s.durationSeconds != nil
+                // ── Post-session Stats ──
+                if let postE = workout.postSessionEnergy {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color.neonPink).frame(width: 5, height: 5)
+                            Text("POST-SESSION").font(.mono(10, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
+                        }
+                        HStack(spacing: 8) {
+                            SessionStatBox(label: "Energy", value: postE, color: statColor(postE))
+                            Spacer()
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+                }
+
+                // ── Exercise Table ──
+                if !workout.exercises.isEmpty {
+                    VStack(spacing: 0) {
+                        // Table header
+                        HStack {
+                            Text("Exercise").font(.mono(9.5, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.35))
+                            Spacer()
+                            Text("Sets").font(.mono(9.5, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.35))
+                                .frame(width: 70, alignment: .trailing)
+                            Text("Weight").font(.mono(9.5, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.35))
+                                .frame(width: 80, alignment: .trailing)
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .overlay(Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1), alignment: .bottom)
+
+                        ForEach(workout.exercises) { ex in
+                            let setsCompleted = ex.setsData.filter { $0.completed }.count
+                            let setsExpected = ex.sets
+                            let isMiss = setsCompleted < setsExpected
+                            let weight = ex.setsData.compactMap { $0.weightLbs }.first
+
+                            HStack {
+                                Text(ex.name)
+                                    .font(.body(13, weight: .semibold))
+                                    .foregroundStyle(Color.white.opacity(0.9))
+                                    .lineLimit(1)
+                                Spacer()
+                                // sets ratio
                                 HStack(spacing: 0) {
-                                    Text("SET \(j + 1)")
-                                        .font(.mono(10))
-                                        .foregroundStyle(Color.white.opacity(0.35))
-                                        .frame(width: 52, alignment: .leading)
-                                    HStack(spacing: 2) {
-                                        Text(isDur ? "\(s.durationSeconds ?? 0)" : "\(s.reps ?? 0)")
-                                            .font(.mono(12, weight: .semibold))
-                                            .foregroundStyle(s.completed ? .white : Color.white.opacity(0.35))
-                                        Text(isDur ? "SEC" : "REPS")
-                                            .font(.mono(9))
-                                            .foregroundStyle(Color.white.opacity(0.3))
-                                    }
-                                    Spacer()
-                                    if let w = s.weightLbs, w > 0 {
+                                    Text("\(setsCompleted)")
+                                        .font(.mono(12.5, weight: .bold))
+                                        .foregroundStyle(isMiss ? Color(hex: "fbbf24") : .white)
+                                    Text("/\(setsExpected)")
+                                        .font(.mono(12.5))
+                                        .foregroundStyle(Color.white.opacity(0.4))
+                                }
+                                .frame(width: 70, alignment: .trailing)
+                                // weight
+                                Group {
+                                    if let w = weight, w > 0 {
                                         Text(w.truncatingRemainder(dividingBy: 1) == 0
-                                             ? "\(Int(w)) lbs"
-                                             : String(format: "%.1f lbs", w))
-                                            .font(.mono(11))
-                                            .foregroundStyle(Color.white.opacity(0.45))
+                                             ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w))
+                                            .font(.mono(12, weight: .semibold))
+                                            .foregroundStyle(Color.white.opacity(0.75))
                                     } else {
-                                        Text("—")
-                                            .font(.mono(11))
+                                        Text("—").font(.mono(12))
                                             .foregroundStyle(Color.white.opacity(0.2))
                                     }
-                                    Image(systemName: s.completed ? "checkmark" : "xmark")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundStyle(s.completed ? Color.neonGreen : Color.neonRed.opacity(0.7))
-                                        .frame(width: 24, alignment: .trailing)
                                 }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(Color.white.opacity(j % 2 == 0 ? 0.02 : 0.0))
+                                .frame(width: 80, alignment: .trailing)
                             }
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .overlay(Rectangle().fill(Color.white.opacity(0.04)).frame(height: 1), alignment: .bottom)
                         }
-                        .padding(.bottom, 4)
                     }
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
                 }
-                .background(Color.white.opacity(0.03))
-                .overlay(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 0,
-                        bottomLeadingRadius: isLast ? 14 : 0,
-                        bottomTrailingRadius: isLast ? 14 : 0,
-                        topTrailingRadius: 0
-                    )
-                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
-                )
-            }
 
-            // Tags row
-            let hasComment = workout.comment.map { !$0.isEmpty } ?? false
-            let isTagsLast = !hasComment
-            HStack(spacing: 6) {
-                Image(systemName: "tag")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.white.opacity(0.3))
-                if workout.tags.isEmpty {
-                    Text("No tags")
-                        .font(.mono(10))
-                        .foregroundStyle(Color.white.opacity(0.2))
-                } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
+                // ── Session Quality Rating ──
+                if onSessionQualityChanged != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("SESSION QUALITY").font(.mono(10, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
                         HStack(spacing: 4) {
-                            ForEach(workout.tags) { tag in
-                                Text(tag.name)
-                                    .font(.mono(10))
-                                    .foregroundStyle(Color.neonCyan.opacity(0.8))
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Color.neonCyan.opacity(0.08))
-                                    .overlay(Capsule().stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
-                                    .clipShape(Capsule())
+                            ForEach(1...10, id: \.self) { n in
+                                let selected = workout.sessionQuality == n
+                                let inRange = (workout.sessionQuality ?? 0) >= n
+                                Button { onSessionQualityChanged?(n) } label: {
+                                    Text("\(n)")
+                                        .font(.display(14, weight: .heavy))
+                                        .foregroundStyle(selected ? Color(hex: "1a0010") : (inRange ? Color.neonPink.opacity(0.55) : Color.white.opacity(0.5)))
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 32)
+                                        .background(
+                                            selected
+                                            ? LinearGradient(colors: [Color.neonPink, Color(hex: "e855a0")], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                            : (inRange ? LinearGradient(colors: [Color.neonPink.opacity(0.08), Color.neonPink.opacity(0.08)], startPoint: .top, endPoint: .bottom)
+                                               : LinearGradient(colors: [Color.white.opacity(0.03), Color.white.opacity(0.03)], startPoint: .top, endPoint: .bottom))
+                                        )
+                                        .overlay(RoundedRectangle(cornerRadius: 8)
+                                            .stroke(selected ? .clear : (inRange ? Color.neonPink.opacity(0.18) : Color.white.opacity(0.1)), lineWidth: 1))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .shadow(color: selected ? Color.neonPink.opacity(0.4) : .clear, radius: 6, y: 3)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
                 }
-                Spacer()
-                if onTagsUpdated != nil {
-                    Button {
-                        selectedTagIds = Set(workout.tags.map(\.id))
-                        showTagsSheet = true
-                    } label: {
-                        Text("Edit")
-                            .font(.mono(10, weight: .semibold))
-                            .foregroundStyle(Color.neonCyan)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(Color.white.opacity(0.02))
-            .overlay(
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 0,
-                    bottomLeadingRadius: isTagsLast ? 14 : 0,
-                    bottomTrailingRadius: isTagsLast ? 14 : 0,
-                    topTrailingRadius: 0
-                )
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-            )
 
-            if let comment = workout.comment, !comment.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "text.bubble").font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.3))
-                    Text(comment).font(.body(12)).foregroundStyle(Color.white.opacity(0.5))
+                // ── Tags row ──
+                let hasComment = workout.comment.map { !$0.isEmpty } ?? false
+                HStack(spacing: 6) {
+                    Image(systemName: "tag").font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.3))
+                    if workout.tags.isEmpty {
+                        Text("No tags").font(.mono(10)).foregroundStyle(Color.white.opacity(0.2))
+                    } else {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 4) {
+                                ForEach(workout.tags) { tag in
+                                    Text(tag.name).font(.mono(10))
+                                        .foregroundStyle(Color.neonCyan.opacity(0.8))
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Color.neonCyan.opacity(0.08))
+                                        .overlay(Capsule().stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                    }
                     Spacer()
+                    if onTagsUpdated != nil {
+                        Button { selectedTagIds = Set(workout.tags.map(\.id)); showTagsSheet = true } label: {
+                            Text("Edit").font(.mono(10, weight: .semibold)).foregroundStyle(Color.neonCyan)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Color.white.opacity(0.02))
-                .overlay(
-                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 14,
-                                           bottomTrailingRadius: 14, topTrailingRadius: 0)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                )
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+
+                // ── Comment ──
+                if let comment = workout.comment, !comment.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.bubble").font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.3))
+                        Text(comment).font(.body(12)).foregroundStyle(Color.white.opacity(0.5))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+                }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .background(Color.white.opacity(0.04))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.09), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
         .sheet(isPresented: $showTagsSheet) { tagsSheet }
     }
 
