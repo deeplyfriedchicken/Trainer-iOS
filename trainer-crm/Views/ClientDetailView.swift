@@ -369,6 +369,7 @@ struct ClientDetailView: View {
                     case .chat:         EmptyView()
                     }
                 }
+                .scrollDisabled(reorderingPlanId != nil)
                 .refreshable { await store.loadClientDetail(client.id, showRefreshToast: true) }
             }
         }
@@ -802,12 +803,14 @@ struct ClientDetailView: View {
             NumberBadge(number: i + 1)
 
             Button {
+                guard !isReordering else { return }
                 targetWorkoutId = plan.id
                 openExerciseForm(ex)
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
-                        Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
+                        Text(ex.name).font(.body(14, weight: .semibold))
+                            .foregroundStyle(isReordering ? Color.white.opacity(0.6) : .white)
                         if ex.isHidden {
                             Image(systemName: "eye.slash")
                                 .font(.system(size: 10))
@@ -826,27 +829,30 @@ struct ClientDetailView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .allowsHitTesting(!isReordering)
 
-            if !linkedVideos.isEmpty {
-                let ready = linkedVideos.filter { !$0.isProcessing }
-                let anyProcessing = linkedVideos.contains { $0.isProcessing }
-                if anyProcessing {
-                    ProgressView().tint(Color.neonCyan).scaleEffect(0.75)
-                        .padding(.horizontal, 7).padding(.vertical, 5)
-                } else if !ready.isEmpty {
-                    Button { galleryVideos = ready; showVideoGallery = true } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: ready.count > 1 ? "play.square.stack.fill" : "play.fill")
-                                .font(.system(size: ready.count > 1 ? 11 : 9))
-                            if ready.count > 1 { Text("\(ready.count)").font(.mono(9)) }
+            if !isReordering {
+                if !linkedVideos.isEmpty {
+                    let ready = linkedVideos.filter { !$0.isProcessing }
+                    let anyProcessing = linkedVideos.contains { $0.isProcessing }
+                    if anyProcessing {
+                        ProgressView().tint(Color.neonCyan).scaleEffect(0.75)
+                            .padding(.horizontal, 7).padding(.vertical, 5)
+                    } else if !ready.isEmpty {
+                        Button { galleryVideos = ready; showVideoGallery = true } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: ready.count > 1 ? "play.square.stack.fill" : "play.fill")
+                                    .font(.system(size: ready.count > 1 ? 11 : 9))
+                                if ready.count > 1 { Text("\(ready.count)").font(.mono(9)) }
+                            }
+                            .foregroundStyle(Color.neonCyan)
+                            .padding(.horizontal, 7).padding(.vertical, 5)
+                            .background(Color.neonCyan.opacity(0.12))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
-                        .foregroundStyle(Color.neonCyan)
-                        .padding(.horizontal, 7).padding(.vertical, 5)
-                        .background(Color.neonCyan.opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
 
