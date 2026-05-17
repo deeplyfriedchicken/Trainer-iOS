@@ -439,6 +439,9 @@ struct ClientDetailView: View {
         let groupId: String?
         let draft: WorkoutPlan?
         let published: WorkoutPlan?
+        // Sort key: the published plan's occurredAt (stable — never changes after publish).
+        // Falls back to draft's occurredAt for draft-only groups.
+        var sortDate: Date? { published?.occurredAt ?? draft?.occurredAt }
     }
 
     private var planGroups: [PlanGroup] {
@@ -450,7 +453,6 @@ struct ClientDetailView: View {
                 if !seenGroups.contains(gid) {
                     seenGroups.insert(gid)
                     let members = client.workoutPlans.filter { $0.groupId == gid }
-                    // Keep only the single latest draft and single published per group.
                     let latestDraft = members
                         .filter { $0.isDraft }
                         .max(by: { $0.versionNumber < $1.versionNumber })
@@ -461,13 +463,17 @@ struct ClientDetailView: View {
                                             draft: latestDraft, published: currentPublished))
                 }
             } else {
-                // Legacy ungrouped plan — use its own ID so ForEach stays stable.
                 groups.append(PlanGroup(id: plan.id, groupId: nil,
                                         draft: plan.isDraft ? plan : nil,
                                         published: plan.isPublished ? plan : nil))
             }
         }
-        return groups
+
+        // Sort newest-first by the published plan's occurredAt (immutable once published).
+        // This means creating or editing drafts never reorders the list.
+        return groups.sorted {
+            ($0.sortDate ?? .distantPast) > ($1.sortDate ?? .distantPast)
+        }
     }
 
     private var workoutPlansContent: some View {

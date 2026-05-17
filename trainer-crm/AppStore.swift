@@ -148,6 +148,7 @@ class AppStore {
                 name: plan.name,
                 versionStatus: plan.versionStatus ?? "draft",
                 versionNumber: plan.versionNumber ?? 1,
+                occurredAt: plan.occurredAt,
                 exercises: exs
             )
         }
