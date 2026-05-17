@@ -17,23 +17,22 @@ struct ClientDetailView: View {
     @State private var expandedSecondaryPlanId: String? = nil
     @State private var reorderingPlanId: String? = nil
     @State private var swipedPlanId: String? = nil
+    @State private var planCardDragActive = false  // true while the card swipe drag is in motion
     @State private var exerciseDrag: ExerciseDragState? = nil
 
     private struct ExerciseDragState {
         let planId: String
-        let fromIdx: Int
-        var dy: CGFloat
-        var targetIdx: Int
+        var fromIdx: Int        // current position of dragged item (updates on each swap)
+        var dy: CGFloat         // raw gesture translation
+        var lastSwapY: CGFloat  // dy at which the last swap occurred
         static let rowHeight: CGFloat = 54
+        var visualOffset: CGFloat { dy - lastSwapY }
     }
 
+    // Only the dragged row gets an offset — other rows reorder live via the array.
     private func exerciseRowOffset(i: Int, planId: String) -> CGFloat {
-        guard let d = exerciseDrag, d.planId == planId else { return 0 }
-        let h = ExerciseDragState.rowHeight
-        if i == d.fromIdx { return d.dy }
-        if d.fromIdx < d.targetIdx && i > d.fromIdx && i <= d.targetIdx { return -h }
-        if d.fromIdx > d.targetIdx && i < d.fromIdx && i >= d.targetIdx { return h }
-        return 0
+        guard let d = exerciseDrag, d.planId == planId, i == d.fromIdx else { return 0 }
+        return d.visualOffset
     }
     @State private var editingExercise: Exercise? = nil
     @State private var editExName = ""
@@ -369,7 +368,6 @@ struct ClientDetailView: View {
                     case .chat:         EmptyView()
                     }
                 }
-                .scrollDisabled(reorderingPlanId != nil)
                 .refreshable { await store.loadClientDetail(client.id, showRefreshToast: true) }
             }
         }
@@ -512,30 +510,33 @@ struct ClientDetailView: View {
         let isDraft = activePlan.isDraft
         let isSwiped = swipedPlanId == activePlan.id
         let isReordering = reorderingPlanId == activePlan.id
-        let swipeRevealWidth: CGFloat = 160
+        // Reveal width: 160 (two buttons) for drafts, 80 (delete only) for published.
+        let swipeRevealWidth: CGFloat = isDraft ? 160 : 80
 
         ZStack(alignment: .trailing) {
             // ── Swipe-reveal action buttons ──
             HStack(spacing: 0) {
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil }
-                    withAnimation(.easeInOut(duration: 0.18).delay(0.05)) {
-                        reorderingPlanId = reorderingPlanId == activePlan.id ? nil : activePlan.id
+                if isDraft {
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil }
+                        withAnimation(.easeInOut(duration: 0.18).delay(0.05)) {
+                            reorderingPlanId = reorderingPlanId == activePlan.id ? nil : activePlan.id
+                        }
+                    } label: {
+                        VStack(spacing: 5) {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.system(size: 17, weight: .semibold))
+                            Text("Reorder").font(.mono(9, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.neonCyan)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(
+                            LinearGradient(colors: [Color.neonCyan.opacity(0.22), Color.neonCyan.opacity(0.12)],
+                                           startPoint: .top, endPoint: .bottom)
+                        )
                     }
-                } label: {
-                    VStack(spacing: 5) {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text("Reorder").font(.mono(9, weight: .semibold))
-                    }
-                    .foregroundStyle(Color.neonCyan)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(
-                        LinearGradient(colors: [Color.neonCyan.opacity(0.22), Color.neonCyan.opacity(0.12)],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 Button {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil }
@@ -561,7 +562,8 @@ struct ClientDetailView: View {
 
             // ── Hero card ──
             VStack(spacing: 0) {
-                // Hero card
+                // Hero card — disable inner controls when swiped so the
+                // swipe-reveal is the only interactive target
                 VStack(spacing: 0) {
                     // Header
                     HStack(alignment: .top, spacing: 10) {
@@ -644,8 +646,8 @@ struct ClientDetailView: View {
                             let isDraggingThis = exerciseDrag?.planId == activePlan.id && exerciseDrag?.fromIdx == i
                             planExerciseRow(index: i, exercise: ex, plan: activePlan, isReordering: isReordering)
                                 .offset(y: exerciseRowOffset(i: i, planId: activePlan.id))
-                                .animation(isDraggingThis ? nil : .spring(response: 0.22, dampingFraction: 0.85),
-                                            value: exerciseDrag?.targetIdx)
+                                .animation(isDraggingThis ? nil : .spring(response: 0.2, dampingFraction: 0.85),
+                                            value: exerciseDrag?.fromIdx)
                                 .zIndex(isDraggingThis ? 5 : 0)
                         }
                         if isReordering {
@@ -772,6 +774,7 @@ struct ClientDetailView: View {
                             .stroke(isDraft ? Color.neonOrange.opacity(0.35) : Color.neonGreen.opacity(0.22) as Color, lineWidth: 1))
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 20))
+                .disabled(isSwiped && !isReordering)
                 .offset(x: isSwiped ? -swipeRevealWidth : 0)
                 .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isSwiped)
                 .simultaneousGesture(
@@ -779,10 +782,12 @@ struct ClientDetailView: View {
                         .onChanged { value in
                             guard !isReordering else { return }
                             guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                            planCardDragActive = true
                             if value.translation.width < -30, !isSwiped { swipedPlanId = activePlan.id }
                             else if value.translation.width > 30, isSwiped { swipedPlanId = nil }
                         }
                         .onEnded { value in
+                            planCardDragActive = false
                             guard !isReordering else { return }
                             guard abs(value.translation.width) > abs(value.translation.height) else { return }
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
@@ -805,7 +810,7 @@ struct ClientDetailView: View {
             NumberBadge(number: i + 1)
 
             Button {
-                guard !isReordering else { return }
+                guard !isReordering, !planCardDragActive else { return }
                 targetWorkoutId = plan.id
                 openExerciseForm(ex)
             } label: {
@@ -831,7 +836,7 @@ struct ClientDetailView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .allowsHitTesting(!isReordering)
+            .allowsHitTesting(!isReordering && !planCardDragActive)
 
             if !isReordering {
                 if !linkedVideos.isEmpty {
@@ -866,39 +871,44 @@ struct ClientDetailView: View {
                             .onChanged { value in
                                 let rowH = ExerciseDragState.rowHeight
                                 let dy = value.translation.height
-                                let offset = Int((dy / rowH).rounded())
                                 guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
                                 let count = client.workoutPlans[wi].exercises.count
-                                let target = max(0, min(count - 1, i + offset))
+
                                 if exerciseDrag == nil {
                                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                    exerciseDrag = ExerciseDragState(planId: plan.id, fromIdx: i, dy: dy, targetIdx: target)
+                                    exerciseDrag = ExerciseDragState(planId: plan.id, fromIdx: i, dy: dy, lastSwapY: 0)
                                 } else {
-                                    if exerciseDrag?.targetIdx != target {
-                                        UISelectionFeedbackGenerator().selectionChanged()
-                                    }
-                                    exerciseDrag?.dy = dy
-                                    exerciseDrag?.targetIdx = target
-                                }
-                            }
-                            .onEnded { _ in
-                                guard let d = exerciseDrag, d.planId == plan.id,
-                                      let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else {
-                                    exerciseDrag = nil; return
-                                }
-                                if d.targetIdx != d.fromIdx {
-                                    var exs = client.workoutPlans[wi].exercises
-                                    let moved = exs.remove(at: d.fromIdx)
-                                    exs.insert(moved, at: d.targetIdx)
-                                    client.workoutPlans[wi].exercises = exs
-                                    let updated = client.workoutPlans[wi]
-                                    Task {
-                                        if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
-                                            _ = draftViewGroups.insert(gid)
+                                    exerciseDrag!.dy = dy
+                                    // Swap when the finger crosses half a row height past the last swap.
+                                    let delta = dy - exerciseDrag!.lastSwapY
+                                    if abs(delta) >= rowH * 0.6 {
+                                        let dir = delta > 0 ? 1 : -1
+                                        let from = exerciseDrag!.fromIdx
+                                        let target = from + dir
+                                        if target >= 0 && target < count {
+                                            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                                                client.workoutPlans[wi].exercises.swapAt(from, target)
+                                            }
+                                            exerciseDrag!.fromIdx = target
+                                            exerciseDrag!.lastSwapY = dy
+                                            UISelectionFeedbackGenerator().selectionChanged()
                                         }
                                     }
                                 }
-                                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { exerciseDrag = nil }
+                            }
+                            .onEnded { _ in
+                                guard exerciseDrag?.planId == plan.id,
+                                      let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else {
+                                    exerciseDrag = nil; return
+                                }
+                                // Array is already in the right order — just clear drag state and save.
+                                exerciseDrag = nil
+                                let updated = client.workoutPlans[wi]
+                                Task {
+                                    if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
+                                        _ = draftViewGroups.insert(gid)
+                                    }
+                                }
                             }
                     )
             } else {
