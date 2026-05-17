@@ -15,6 +15,7 @@ struct ClientDetailView: View {
     @State private var draftViewGroups: Set<String> = []   // groupIds showing draft view
     @State private var planToPublish: WorkoutPlan? = nil
     @State private var expandedSecondaryPlanId: String? = nil
+    @State private var reorderingPlanId: String? = nil
     @State private var editingExercise: Exercise? = nil
     @State private var editExName = ""
     @State private var editExType: ExerciseType = .reps
@@ -22,6 +23,7 @@ struct ClientDetailView: View {
     @State private var editExReps = "10"
     @State private var editExDuration = "30"
     @State private var editExNotes = ""
+    @State private var editExWeight = ""
     @State private var editExVideoIds: Set<String> = []
     @State private var editExIsHidden = false
     @State private var newWorkoutName = ""
@@ -416,7 +418,7 @@ struct ClientDetailView: View {
                             if let wi = client.workouts.firstIndex(where: { $0.id == workout.id }) {
                                 client.workouts[wi].sessionQuality = q
                             }
-                            Task { await store.updateSessionQuality(clientId: client.id, workoutId: workout.id, sessionQuality: q) }
+                            store.updateSessionQuality(clientId: client.id, workoutId: workout.id, sessionQuality: q)
                         }
                     )
                     .padding(.horizontal, 16).padding(.bottom, 14)
@@ -560,8 +562,26 @@ struct ClientDetailView: View {
                     // Exercises list
                     if !activePlan.exercises.isEmpty {
                         Divider().background(Color.white.opacity(0.07)).padding(.horizontal, 16)
+                        let isReordering = reorderingPlanId == activePlan.id
                         ForEach(Array(activePlan.exercises.enumerated()), id: \.element.id) { i, ex in
-                            planExerciseRow(index: i, exercise: ex, plan: activePlan)
+                            planExerciseRow(index: i, exercise: ex, plan: activePlan, isReordering: isReordering)
+                        }
+                        if isReordering {
+                            HStack {
+                                Spacer()
+                                Button {
+                                    withAnimation { reorderingPlanId = nil }
+                                } label: {
+                                    Text("Done")
+                                        .font(.mono(11, weight: .semibold)).foregroundStyle(Color.neonCyan)
+                                        .padding(.horizontal, 12).padding(.vertical, 6)
+                                        .background(Color.neonCyan.opacity(0.1))
+                                        .overlay(Capsule().stroke(Color.neonCyan.opacity(0.3), lineWidth: 1))
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 6)
                         }
                     }
 
@@ -593,6 +613,22 @@ struct ClientDetailView: View {
                                     .padding(.vertical, 9)
                                     .background(Color.neonOrange.opacity(0.1))
                                     .overlay(Capsule().stroke(Color.neonOrange.opacity(0.3), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if !activePlan.exercises.isEmpty {
+                            Button {
+                                withAnimation { reorderingPlanId = reorderingPlanId == activePlan.id ? nil : activePlan.id }
+                            } label: {
+                                Label("Reorder", systemImage: "arrow.up.arrow.down")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.neonCyan)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(Color.neonCyan.opacity(0.08))
+                                    .overlay(Capsule().stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
                                     .clipShape(Capsule())
                             }
                             .buttonStyle(.plain)
@@ -632,7 +668,7 @@ struct ClientDetailView: View {
     }
 
     @ViewBuilder
-    private func planExerciseRow(index i: Int, exercise ex: Exercise, plan: WorkoutPlan) -> some View {
+    private func planExerciseRow(index i: Int, exercise ex: Exercise, plan: WorkoutPlan, isReordering: Bool = false) -> some View {
         let linkedVideos = ex.videoIds.compactMap { id in client.videos.first(where: { $0.id == id }) }
         HStack(spacing: 12) {
             NumberBadge(number: i + 1)
@@ -650,7 +686,13 @@ struct ClientDetailView: View {
                                 .foregroundStyle(Color.neonOrange.opacity(0.7))
                         }
                     }
-                    Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                    HStack(spacing: 6) {
+                        Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                        if let w = ex.weightLbs, w > 0 {
+                            let wStr = w.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w)
+                            Text("· \(wStr)").font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -680,19 +722,73 @@ struct ClientDetailView: View {
                 }
             }
 
-            Button { exerciseRecordTarget = (workoutId: plan.id, exerciseId: ex.id) } label: {
-                Image(systemName: "video.fill").font(.system(size: 10))
-                    .foregroundStyle(Color.neonPink)
-                    .padding(.horizontal, 7).padding(.vertical, 5)
-                    .background(Color.neonPink.opacity(0.12))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            if isReordering {
+                VStack(spacing: 2) {
+                    Button {
+                        guard i > 0, let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
+                        client.workoutPlans[wi].exercises.swapAt(i, i - 1)
+                        let updated = client.workoutPlans[wi]
+                        Task {
+                            if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
+                                _ = draftViewGroups.insert(gid)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "chevron.up").font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(i > 0 ? Color.neonCyan : Color.white.opacity(0.2))
+                    }
+                    .buttonStyle(.plain).disabled(i == 0)
+
+                    Button {
+                        guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }),
+                              i < client.workoutPlans[wi].exercises.count - 1 else { return }
+                        client.workoutPlans[wi].exercises.swapAt(i, i + 1)
+                        let updated = client.workoutPlans[wi]
+                        Task {
+                            if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
+                                _ = draftViewGroups.insert(gid)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.neonCyan)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .frame(width: 28)
+                .padding(.vertical, 4)
+                .background(Color.neonCyan.opacity(0.08))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+            } else {
+                Button { exerciseRecordTarget = (workoutId: plan.id, exerciseId: ex.id) } label: {
+                    Image(systemName: "video.fill").font(.system(size: 10))
+                        .foregroundStyle(Color.neonPink)
+                        .padding(.horizontal, 7).padding(.vertical, 5)
+                        .background(Color.neonPink.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
         .background(Color.white.opacity(0.03))
         .overlay(Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1), alignment: .top)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
+                client.workoutPlans[wi].exercises.removeAll { $0.id == ex.id }
+                let updated = client.workoutPlans[wi]
+                Task {
+                    if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
+                        _ = draftViewGroups.insert(gid)
+                    }
+                }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 
     @ViewBuilder
@@ -812,6 +908,7 @@ struct ClientDetailView: View {
         editExSets = exercise.map { "\($0.sets)" } ?? "3"
         editExReps = exercise?.reps.map(String.init) ?? "10"
         editExDuration = exercise?.durationSeconds.map(String.init) ?? "30"
+        editExWeight = exercise?.weightLbs.map { $0.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int($0))" : String(format: "%.1f", $0) } ?? ""
         editExNotes = exercise?.comment ?? ""
         editExVideoIds = Set(exercise?.videoIds ?? [])
         editExIsHidden = exercise?.isHidden ?? false
@@ -835,6 +932,7 @@ struct ClientDetailView: View {
             sets: Int(editExSets) ?? 3,
             reps: editExType == .reps ? (Int(editExReps) ?? 10) : nil,
             durationSeconds: editExType == .duration ? (Int(editExDuration) ?? 30) : nil,
+            weightLbs: Double(editExWeight.trimmingCharacters(in: .whitespaces)),
             comment: editExNotes,
             videoIds: Array(confirmedVideoIds),
             isHidden: editExIsHidden
@@ -891,6 +989,8 @@ struct ClientDetailView: View {
                         } else {
                             FormField(label: "Duration (seconds)", text: $editExDuration, placeholder: "30", keyboardType: .numberPad)
                         }
+
+                        FormField(label: "Weight (lbs)", text: $editExWeight, placeholder: "Optional", keyboardType: .decimalPad)
 
                         FormField(label: "Notes", text: $editExNotes, placeholder: "Optional notes")
 
@@ -1101,6 +1201,7 @@ struct ClientDetailView: View {
                         .padding(.bottom, 8)
                     }
                     .scrollDismissesKeyboard(.interactively)
+                    .onTapGesture { isChatFocused = false }
                     .onChange(of: chatMessages.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("chatBottom") }
                     }
@@ -1191,7 +1292,6 @@ struct ClientDetailView: View {
     }
 
     private func loadChat() async {
-        guard store.currentUser != nil else { return }
         isChatLoading = true
         defer { isChatLoading = false }
         do {
@@ -1860,52 +1960,57 @@ struct WorkoutSessionCard: View {
                     .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
                 }
 
-                // ── Exercise Table ──
+                // ── Exercise + Per-set rows ──
                 if !workout.exercises.isEmpty {
                     VStack(spacing: 0) {
-                        // Table header
-                        HStack {
-                            Text("Exercise").font(.mono(9.5, weight: .bold))
-                                .foregroundStyle(Color.white.opacity(0.35))
-                            Spacer()
-                            Text("Sets").font(.mono(9.5, weight: .bold))
-                                .foregroundStyle(Color.white.opacity(0.35))
-                                .frame(width: 70, alignment: .trailing)
-                            Text("Weight").font(.mono(9.5, weight: .bold))
-                                .foregroundStyle(Color.white.opacity(0.35))
-                                .frame(width: 80, alignment: .trailing)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .overlay(Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1), alignment: .bottom)
-
                         ForEach(workout.exercises) { ex in
-                            let setsCompleted = ex.setsData.filter { $0.completed }.count
-                            let setsExpected = ex.sets
-                            let isMiss = setsCompleted < setsExpected
-                            let weight = ex.setsData.compactMap { $0.weightLbs }.first
-
-                            HStack {
-                                Text(ex.name)
-                                    .font(.body(13, weight: .semibold))
-                                    .foregroundStyle(Color.white.opacity(0.9))
-                                    .lineLimit(1)
-                                Spacer()
-                                // sets ratio
-                                HStack(spacing: 0) {
-                                    Text("\(setsCompleted)")
-                                        .font(.mono(12.5, weight: .bold))
-                                        .foregroundStyle(isMiss ? Color(hex: "fbbf24") : .white)
-                                    Text("/\(setsExpected)")
-                                        .font(.mono(12.5))
-                                        .foregroundStyle(Color.white.opacity(0.4))
+                            VStack(spacing: 0) {
+                                // Exercise header
+                                HStack(spacing: 10) {
+                                    NumberBadge(number: workout.exercises.firstIndex(where: { $0.id == ex.id }).map { $0 + 1 } ?? 1, color: .neonCyan)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(ex.name).font(.body(13, weight: .semibold)).foregroundStyle(.white)
+                                        Text(ex.displaySets).font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                                    }
+                                    Spacer()
                                 }
-                                .frame(width: 70, alignment: .trailing)
-                                // weight
-                                weightCell(weight)
-                                    .frame(width: 80, alignment: .trailing)
+                                .padding(.horizontal, 14).padding(.vertical, 10)
+
+                                // Per-set rows
+                                if !ex.setsData.isEmpty {
+                                    ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
+                                        let isDur = s.durationSeconds != nil
+                                        HStack(spacing: 0) {
+                                            Text("SET \(j + 1)")
+                                                .font(.mono(10))
+                                                .foregroundStyle(Color.white.opacity(0.35))
+                                                .frame(width: 48, alignment: .leading)
+                                            HStack(spacing: 2) {
+                                                Text(isDur ? "\(s.durationSeconds ?? 0)" : "\(s.reps ?? 0)")
+                                                    .font(.mono(12, weight: .semibold))
+                                                    .foregroundStyle(s.completed ? .white : Color.white.opacity(0.35))
+                                                Text(isDur ? "SEC" : "REPS")
+                                                    .font(.mono(9))
+                                                    .foregroundStyle(Color.white.opacity(0.3))
+                                            }
+                                            Spacer()
+                                            if let w = s.weightLbs, w > 0 {
+                                                let wStr = w.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w)
+                                                Text(wStr).font(.mono(11)).foregroundStyle(Color.white.opacity(0.45))
+                                            } else {
+                                                Text("—").font(.mono(11)).foregroundStyle(Color.white.opacity(0.2))
+                                            }
+                                            Image(systemName: s.completed ? "checkmark" : "xmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(s.completed ? Color.neonGreen : Color.neonRed.opacity(0.7))
+                                                .frame(width: 22, alignment: .trailing)
+                                        }
+                                        .padding(.horizontal, 14).padding(.vertical, 7)
+                                        .background(Color.white.opacity(j % 2 == 0 ? 0.02 : 0.0))
+                                    }
+                                }
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 10)
-                            .overlay(Rectangle().fill(Color.white.opacity(0.04)).frame(height: 1), alignment: .bottom)
+                            .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
                         }
                     }
                     .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)

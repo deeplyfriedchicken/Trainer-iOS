@@ -156,6 +156,7 @@ class AppStore {
                         sets: ex.sets ?? 1,
                         reps: ex.reps,
                         durationSeconds: ex.durationSeconds,
+                        weightLbs: ex.weightLbs,
                         comment: ex.comment ?? "",
                         videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
                         isHidden: ex.isHidden ?? false
@@ -336,6 +337,7 @@ class AppStore {
                 sets: ex.sets,
                 reps: ex.exerciseType == .reps ? ex.reps : nil,
                 durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
+                weightLbs: ex.weightLbs,
                 comment: ex.comment.isEmpty ? nil : ex.comment,
                 videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds,
                 isHidden: ex.isHidden
@@ -364,6 +366,7 @@ class AppStore {
                 sets: ex.sets,
                 reps: ex.exerciseType == .reps ? ex.reps : nil,
                 durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
+                weightLbs: ex.weightLbs,
                 comment: ex.comment.isEmpty ? nil : ex.comment,
                 videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds,
                 isHidden: ex.isHidden
@@ -390,16 +393,11 @@ class AppStore {
         }
     }
 
-    func updateSessionQuality(clientId: String, workoutId: String, sessionQuality: Int) async {
-        do {
-            try await api.updateSessionQuality(workoutId: workoutId, sessionQuality: sessionQuality)
-            guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
-                  let widx = clients[cidx].workouts.firstIndex(where: { $0.id == workoutId })
-            else { return }
-            clients[cidx].workouts[widx].sessionQuality = sessionQuality
-        } catch {
-            self.error = (error as? APIError) ?? .networkError(error)
-        }
+    func updateSessionQuality(clientId: String, workoutId: String, sessionQuality: Int) {
+        guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
+              let widx = clients[cidx].workouts.firstIndex(where: { $0.id == workoutId })
+        else { return }
+        clients[cidx].workouts[widx].sessionQuality = sessionQuality
     }
 
     func setWorkoutTags(clientId: String, workoutId: String, tags: [WorkoutTag]) async {

@@ -244,13 +244,7 @@ final class APIClient {
         return wrapper.data
     }
 
-    func updateSessionQuality(workoutId: String, sessionQuality: Int) async throws {
-        struct Body: Encodable { let sessionQuality: Int }
-        let _: EmptyResponse = try await patch(
-            "/api/workouts/\(workoutId)/session-quality",
-            body: Body(sessionQuality: sessionQuality)
-        )
-    }
+    // No server endpoint for session quality yet — updates are local-only.
 
     func fetchVideos(limit: Int = 20, offset: Int = 0) async throws -> [VideoListItemResponse] {
         let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(
@@ -609,12 +603,13 @@ struct ExercisePayload: Encodable, Sendable {
     let sets: Int
     let reps: Int?
     let durationSeconds: Int?
+    let weightLbs: Double?
     let comment: String?
     let videoIds: [String]?
     let isHidden: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, name, type, sets, reps, durationSeconds, comment, videoIds, isHidden
+        case id, name, type, sets, reps, durationSeconds, weightLbs, comment, videoIds, isHidden
     }
 
     func encode(to encoder: Encoder) throws {
@@ -625,6 +620,7 @@ struct ExercisePayload: Encodable, Sendable {
         try container.encode(sets, forKey: .sets)
         try container.encodeIfPresent(reps, forKey: .reps)
         try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
+        try container.encodeIfPresent(weightLbs, forKey: .weightLbs)
         try container.encodeIfPresent(comment, forKey: .comment)
         try container.encodeIfPresent(videoIds, forKey: .videoIds)
         try container.encode(isHidden, forKey: .isHidden)

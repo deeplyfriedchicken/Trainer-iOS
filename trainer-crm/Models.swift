@@ -92,6 +92,7 @@ struct Exercise: Identifiable {
     var sets: Int = 3
     var reps: Int? = 10
     var durationSeconds: Int? = nil
+    var weightLbs: Double? = nil
     var comment: String = ""
     var videoIds: [String] = []
     var setsData: [ExerciseSetLog] = []
