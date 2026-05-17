@@ -141,27 +141,28 @@ class AppStore {
         // Plans — sourced from the trainee detail which includes exercises + videos inline.
         // The detail returns non-archived plans (draft + published), so both states show up.
         clients[idx].workoutPlans = (detail.workoutPlans ?? []).map { plan in
-            WorkoutPlan(
+            let exs: [Exercise] = (plan.exercises ?? []).map { ex in
+                Exercise(
+                    id: ex.id,
+                    serverId: ex.id,
+                    name: ex.name,
+                    exerciseType: ex.type == "duration" ? .duration : .reps,
+                    sets: ex.sets ?? 1,
+                    reps: ex.reps,
+                    durationSeconds: ex.durationSeconds,
+                    weightLbs: ex.weightLbs,
+                    comment: ex.comment ?? "",
+                    videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
+                    isHidden: ex.isHidden ?? false
+                )
+            }
+            return WorkoutPlan(
                 id: plan.id,
                 groupId: plan.workoutPlanGroupId,
                 name: plan.name,
                 versionStatus: plan.versionStatus ?? "draft",
                 versionNumber: plan.versionNumber ?? 1,
-                exercises: (plan.exercises ?? []).map { ex in
-                    Exercise(
-                        id: ex.id,
-                        serverId: ex.id,
-                        name: ex.name,
-                        exerciseType: ex.type == "duration" ? .duration : .reps,
-                        sets: ex.sets ?? 1,
-                        reps: ex.reps,
-                        durationSeconds: ex.durationSeconds,
-                        weightLbs: ex.weightLbs,
-                        comment: ex.comment ?? "",
-                        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
-                        isHidden: ex.isHidden ?? false
-                    )
-                }
+                exercises: exs
             )
         }
 

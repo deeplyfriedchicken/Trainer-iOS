@@ -1979,34 +1979,7 @@ struct WorkoutSessionCard: View {
                                 // Per-set rows
                                 if !ex.setsData.isEmpty {
                                     ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
-                                        let isDur = s.durationSeconds != nil
-                                        HStack(spacing: 0) {
-                                            Text("SET \(j + 1)")
-                                                .font(.mono(10))
-                                                .foregroundStyle(Color.white.opacity(0.35))
-                                                .frame(width: 48, alignment: .leading)
-                                            HStack(spacing: 2) {
-                                                Text(isDur ? "\(s.durationSeconds ?? 0)" : "\(s.reps ?? 0)")
-                                                    .font(.mono(12, weight: .semibold))
-                                                    .foregroundStyle(s.completed ? .white : Color.white.opacity(0.35))
-                                                Text(isDur ? "SEC" : "REPS")
-                                                    .font(.mono(9))
-                                                    .foregroundStyle(Color.white.opacity(0.3))
-                                            }
-                                            Spacer()
-                                            if let w = s.weightLbs, w > 0 {
-                                                let wStr = w.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w)
-                                                Text(wStr).font(.mono(11)).foregroundStyle(Color.white.opacity(0.45))
-                                            } else {
-                                                Text("—").font(.mono(11)).foregroundStyle(Color.white.opacity(0.2))
-                                            }
-                                            Image(systemName: s.completed ? "checkmark" : "xmark")
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundStyle(s.completed ? Color.neonGreen : Color.neonRed.opacity(0.7))
-                                                .frame(width: 22, alignment: .trailing)
-                                        }
-                                        .padding(.horizontal, 14).padding(.vertical, 7)
-                                        .background(Color.white.opacity(j % 2 == 0 ? 0.02 : 0.0))
+                                        workoutSetRow(index: j, set: s)
                                     }
                                 }
                             }
@@ -2096,6 +2069,40 @@ struct WorkoutSessionCard: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.09), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .sheet(isPresented: $showTagsSheet) { tagsSheet }
+    }
+
+    @ViewBuilder
+    private func workoutSetRow(index j: Int, set s: ExerciseSetLog) -> some View {
+        let isDur = s.durationSeconds != nil
+        let count = isDur ? "\(s.durationSeconds ?? 0)" : "\(s.reps ?? 0)"
+        let unit = isDur ? "SEC" : "REPS"
+        let weightStr: String? = s.weightLbs.flatMap { w in
+            w > 0 ? (w.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w)) : nil
+        }
+        HStack(spacing: 0) {
+            Text("SET \(j + 1)")
+                .font(.mono(10))
+                .foregroundStyle(Color.white.opacity(0.35))
+                .frame(width: 48, alignment: .leading)
+            HStack(spacing: 2) {
+                Text(count)
+                    .font(.mono(12, weight: .semibold))
+                    .foregroundStyle(s.completed ? .white : Color.white.opacity(0.35))
+                Text(unit)
+                    .font(.mono(9))
+                    .foregroundStyle(Color.white.opacity(0.3))
+            }
+            Spacer()
+            Text(weightStr ?? "—")
+                .font(.mono(11))
+                .foregroundStyle(weightStr != nil ? Color.white.opacity(0.45) : Color.white.opacity(0.2))
+            Image(systemName: s.completed ? "checkmark" : "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(s.completed ? Color.neonGreen : Color.neonRed.opacity(0.7))
+                .frame(width: 22, alignment: .trailing)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 7)
+        .background(Color.white.opacity(j % 2 == 0 ? 0.02 : 0.0))
     }
 
     @ViewBuilder
