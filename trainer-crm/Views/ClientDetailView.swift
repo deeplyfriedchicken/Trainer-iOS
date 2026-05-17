@@ -7,7 +7,7 @@ struct ClientDetailView: View {
     @Binding var client: Client
     let onBack: () -> Void
 
-    @State private var activeTab: DetailTab = .overview
+    @State private var activeTab: DetailTab = .workoutPlans
     @State private var showRecording = false
     @State private var showAddWorkout = false
     @State private var showEditExercise = false
@@ -73,10 +73,9 @@ struct ClientDetailView: View {
     }
 
     enum DetailTab: String, CaseIterable {
-        case overview, workouts, workoutPlans, videos, chat
+        case workouts, workoutPlans, videos, chat
         var displayName: String {
             switch self {
-            case .overview:     return "Overview"
             case .workouts:     return "Workouts"
             case .workoutPlans: return "Plans"
             case .videos:       return "Videos"
@@ -346,7 +345,6 @@ struct ClientDetailView: View {
             } else {
                 ScrollView {
                     switch activeTab {
-                    case .overview:     overviewContent
                     case .workouts:     workoutsContent
                     case .workoutPlans: workoutPlansContent
                     case .videos:       videosContent
@@ -357,46 +355,6 @@ struct ClientDetailView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: isChatFocused && activeTab == .chat)
-    }
-
-    // MARK: - Overview Tab
-
-    private var overviewContent: some View {
-        VStack(spacing: 0) {
-            SectionHeader(title: "Info")
-
-            ForEach([
-                ("Plan", client.plan),
-                ("Status", client.status.rawValue.capitalized),
-                ("Last workout", client.lastSeen),
-            ], id: \.0) { row in
-                HStack {
-                    Text(row.0).font(.mono(11)).foregroundStyle(Color.white.opacity(0.45))
-                    Spacer()
-                    Text(row.1).font(.body(14, weight: .medium)).foregroundStyle(.white)
-                }
-                .padding(.horizontal, 20).padding(.vertical, 11)
-                Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1).padding(.horizontal, 20)
-            }
-
-            SectionHeader(title: "Recent Videos",
-                          action: client.videos.isEmpty ? nil : { activeTab = .videos },
-                          actionLabel: "See All")
-
-            if client.videos.isEmpty {
-                Text("No videos yet · Start recording a session")
-                    .font(.body(13))
-                    .foregroundStyle(Color.white.opacity(0.3))
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
-            } else if let v = client.videos.first {
-                VideoThumb(video: v) {
-                    playingVideo = v
-                }
-                .padding(.horizontal, 16).padding(.bottom, 10)
-            }
-        }
-        .padding(.bottom, 16)
     }
 
     // MARK: - Workouts Tab
