@@ -1967,36 +1967,7 @@ struct WorkoutSessionCard: View {
 
                 // ── Session Quality Rating ──
                 if onSessionQualityChanged != nil {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("SESSION QUALITY").font(.mono(10, weight: .bold))
-                            .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
-                        HStack(spacing: 4) {
-                            ForEach(1...10, id: \.self) { n in
-                                let selected = workout.sessionQuality == n
-                                let inRange = (workout.sessionQuality ?? 0) >= n
-                                Button { onSessionQualityChanged?(n) } label: {
-                                    Text("\(n)")
-                                        .font(.display(14, weight: .heavy))
-                                        .foregroundStyle(selected ? Color(hex: "1a0010") : (inRange ? Color.neonPink.opacity(0.55) : Color.white.opacity(0.5)))
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 32)
-                                        .background(
-                                            selected
-                                            ? LinearGradient(colors: [Color.neonPink, Color(hex: "e855a0")], startPoint: .topLeading, endPoint: .bottomTrailing)
-                                            : (inRange ? LinearGradient(colors: [Color.neonPink.opacity(0.08), Color.neonPink.opacity(0.08)], startPoint: .top, endPoint: .bottom)
-                                               : LinearGradient(colors: [Color.white.opacity(0.03), Color.white.opacity(0.03)], startPoint: .top, endPoint: .bottom))
-                                        )
-                                        .overlay(RoundedRectangle(cornerRadius: 8)
-                                            .stroke(selected ? .clear : (inRange ? Color.neonPink.opacity(0.18) : Color.white.opacity(0.1)), lineWidth: 1))
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                        .shadow(color: selected ? Color.neonPink.opacity(0.4) : .clear, radius: 6, y: 3)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 12)
-                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+                    sessionQualitySection
                 }
 
                 // ── Tags row ──
@@ -2045,6 +2016,45 @@ struct WorkoutSessionCard: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.09), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .sheet(isPresented: $showTagsSheet) { tagsSheet }
+    }
+
+    private var sessionQualitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("SESSION QUALITY").font(.mono(10, weight: .bold))
+                .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
+            HStack(spacing: 4) {
+                ForEach(1...10, id: \.self) { n in
+                    ratingButton(n)
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+    }
+
+    @ViewBuilder
+    private func ratingButton(_ n: Int) -> some View {
+        let selected = workout.sessionQuality == n
+        let inRange = (workout.sessionQuality ?? 0) >= n
+        let fg: Color = selected ? Color(hex: "1a0010") : (inRange ? Color.neonPink.opacity(0.55) : Color.white.opacity(0.5))
+        let bg: LinearGradient = selected
+            ? LinearGradient(colors: [Color.neonPink, Color(hex: "e855a0")], startPoint: .topLeading, endPoint: .bottomTrailing)
+            : (inRange
+               ? LinearGradient(colors: [Color.neonPink.opacity(0.08), Color.neonPink.opacity(0.08)], startPoint: .top, endPoint: .bottom)
+               : LinearGradient(colors: [Color.white.opacity(0.03), Color.white.opacity(0.03)], startPoint: .top, endPoint: .bottom))
+        let strokeColor: Color = selected ? .clear : (inRange ? Color.neonPink.opacity(0.18) : Color.white.opacity(0.1))
+        Button { onSessionQualityChanged?(n) } label: {
+            Text("\(n)")
+                .font(.display(14, weight: .heavy))
+                .foregroundStyle(fg)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .background(bg)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(strokeColor, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .shadow(color: selected ? Color.neonPink.opacity(0.4) : .clear, radius: 6, y: 3)
+        }
+        .buttonStyle(.plain)
     }
 
     private var workoutExercisesSection: some View {

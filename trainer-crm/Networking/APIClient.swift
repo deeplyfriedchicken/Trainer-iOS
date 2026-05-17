@@ -580,6 +580,7 @@ struct ExerciseDetailResponse: Decodable, Identifiable, Sendable {
     let sets: Int?
     let reps: Int?
     let durationSeconds: Int?
+    let weightLbs: Double?
     let comment: String?
     let isHidden: Bool?
     let videoLinks: [VideoLinkResponse]?
