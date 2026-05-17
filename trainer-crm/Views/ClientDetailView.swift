@@ -17,6 +17,24 @@ struct ClientDetailView: View {
     @State private var expandedSecondaryPlanId: String? = nil
     @State private var reorderingPlanId: String? = nil
     @State private var swipedPlanId: String? = nil
+    @State private var exerciseDrag: ExerciseDragState? = nil
+
+    private struct ExerciseDragState {
+        let planId: String
+        let fromIdx: Int
+        var dy: CGFloat
+        var targetIdx: Int
+        static let rowHeight: CGFloat = 54
+    }
+
+    private func exerciseRowOffset(i: Int, planId: String) -> CGFloat {
+        guard let d = exerciseDrag, d.planId == planId else { return 0 }
+        let h = ExerciseDragState.rowHeight
+        if i == d.fromIdx { return d.dy }
+        if d.fromIdx < d.targetIdx && i > d.fromIdx && i <= d.targetIdx { return -h }
+        if d.fromIdx > d.targetIdx && i < d.fromIdx && i >= d.targetIdx { return h }
+        return 0
+    }
     @State private var editingExercise: Exercise? = nil
     @State private var editExName = ""
     @State private var editExType: ExerciseType = .reps
@@ -622,24 +640,45 @@ struct ClientDetailView: View {
                         Divider().background(Color.white.opacity(0.07)).padding(.horizontal, 16)
                         let isReordering = reorderingPlanId == activePlan.id
                         ForEach(Array(activePlan.exercises.enumerated()), id: \.element.id) { i, ex in
+                            let isDraggingThis = exerciseDrag?.planId == activePlan.id && exerciseDrag?.fromIdx == i
                             planExerciseRow(index: i, exercise: ex, plan: activePlan, isReordering: isReordering)
+                                .offset(y: exerciseRowOffset(i: i, planId: activePlan.id))
+                                .animation(isDraggingThis ? nil : .spring(response: 0.22, dampingFraction: 0.85),
+                                            value: exerciseDrag?.targetIdx)
+                                .zIndex(isDraggingThis ? 5 : 0)
                         }
                         if isReordering {
+                            // Done bar — attached to bottom of card, styled per design
                             HStack {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.up.arrow.down")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(Color.neonCyan)
+                                    Text("DRAG TO REORDER")
+                                        .font(.mono(11, weight: .bold))
+                                        .foregroundStyle(Color.neonCyan)
+                                        .tracking(0.08)
+                                }
                                 Spacer()
                                 Button {
-                                    withAnimation { reorderingPlanId = nil }
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                        reorderingPlanId = nil
+                                        exerciseDrag = nil
+                                    }
                                 } label: {
                                     Text("Done")
-                                        .font(.mono(11, weight: .semibold)).foregroundStyle(Color.neonCyan)
-                                        .padding(.horizontal, 12).padding(.vertical, 6)
-                                        .background(Color.neonCyan.opacity(0.1))
-                                        .overlay(Capsule().stroke(Color.neonCyan.opacity(0.3), lineWidth: 1))
+                                        .font(.mono(11, weight: .bold))
+                                        .foregroundStyle(Color.neonCyan)
+                                        .padding(.horizontal, 14).padding(.vertical, 7)
+                                        .background(Color.neonCyan.opacity(0.12))
+                                        .overlay(Capsule().stroke(Color.neonCyan.opacity(0.35), lineWidth: 1))
                                         .clipShape(Capsule())
                                 }
                                 .buttonStyle(.plain)
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 6)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(Color.neonCyan.opacity(0.06))
+                            .overlay(Rectangle().fill(Color.neonCyan.opacity(0.2)).frame(height: 1), alignment: .top)
                         }
                     }
 
@@ -812,43 +851,48 @@ struct ClientDetailView: View {
             }
 
             if isReordering {
-                VStack(spacing: 2) {
-                    Button {
-                        guard i > 0, let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
-                        client.workoutPlans[wi].exercises.swapAt(i, i - 1)
-                        let updated = client.workoutPlans[wi]
-                        Task {
-                            if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
-                                _ = draftViewGroups.insert(gid)
+                // 6-dot grip handle — drag to reorder
+                ExerciseGripHandle()
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                let rowH = ExerciseDragState.rowHeight
+                                let dy = value.translation.height
+                                let offset = Int((dy / rowH).rounded())
+                                guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
+                                let count = client.workoutPlans[wi].exercises.count
+                                let target = max(0, min(count - 1, i + offset))
+                                if exerciseDrag == nil {
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    exerciseDrag = ExerciseDragState(planId: plan.id, fromIdx: i, dy: dy, targetIdx: target)
+                                } else {
+                                    if exerciseDrag?.targetIdx != target {
+                                        UISelectionFeedbackGenerator().selectionChanged()
+                                    }
+                                    exerciseDrag?.dy = dy
+                                    exerciseDrag?.targetIdx = target
+                                }
                             }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.up").font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(i > 0 ? Color.neonCyan : Color.white.opacity(0.2))
-                    }
-                    .buttonStyle(.plain).disabled(i == 0)
-
-                    Button {
-                        guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }),
-                              i < client.workoutPlans[wi].exercises.count - 1 else { return }
-                        client.workoutPlans[wi].exercises.swapAt(i, i + 1)
-                        let updated = client.workoutPlans[wi]
-                        Task {
-                            if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
-                                _ = draftViewGroups.insert(gid)
+                            .onEnded { _ in
+                                guard let d = exerciseDrag, d.planId == plan.id,
+                                      let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else {
+                                    exerciseDrag = nil; return
+                                }
+                                if d.targetIdx != d.fromIdx {
+                                    var exs = client.workoutPlans[wi].exercises
+                                    let moved = exs.remove(at: d.fromIdx)
+                                    exs.insert(moved, at: d.targetIdx)
+                                    client.workoutPlans[wi].exercises = exs
+                                    let updated = client.workoutPlans[wi]
+                                    Task {
+                                        if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
+                                            _ = draftViewGroups.insert(gid)
+                                        }
+                                    }
+                                }
+                                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) { exerciseDrag = nil }
                             }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(Color.neonCyan)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .frame(width: 28)
-                .padding(.vertical, 4)
-                .background(Color.neonCyan.opacity(0.08))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                    )
             } else {
                 Button { exerciseRecordTarget = (workoutId: plan.id, exerciseId: ex.id) } label: {
                     Image(systemName: "video.fill").font(.system(size: 10))
@@ -862,8 +906,11 @@ struct ClientDetailView: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
-        .background(Color.white.opacity(0.03))
-        .overlay(Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1), alignment: .top)
+        .background(exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i
+                    ? Color.neonCyan.opacity(0.08) : Color.white.opacity(0.03))
+        .overlay(RoundedRectangle(cornerRadius: exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? 10 : 0)
+            .stroke(exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? Color.neonCyan.opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1))
+        .shadow(color: exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? Color.black.opacity(0.45) : .clear, radius: 12, y: 6)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
                 guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }

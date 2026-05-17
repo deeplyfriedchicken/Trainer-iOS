@@ -574,6 +574,26 @@ struct VidPill: View {
     }
 }
 
+// MARK: - Exercise Grip Handle (6-dot reorder handle)
+
+struct ExerciseGripHandle: View {
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: 4) {
+                    Circle().fill(Color.neonCyan).frame(width: 3, height: 3)
+                    Circle().fill(Color.neonCyan).frame(width: 3, height: 3)
+                }
+            }
+        }
+        .frame(width: 32, height: 36)
+        .background(Color.neonCyan.opacity(0.07))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.neonCyan.opacity(0.2), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+    }
+}
+
 // MARK: - Session Stat Box
 
 struct SessionStatBox: View {
