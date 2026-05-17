@@ -304,7 +304,14 @@ class AppStore {
         do {
             let plan = try await api.createWorkoutPlan(traineeId: clientId, name: name)
             guard let idx = clients.firstIndex(where: { $0.id == clientId }) else { return }
-            clients[idx].workoutPlans.append(WorkoutPlan(id: plan.id, name: plan.name, exercises: []))
+            clients[idx].workoutPlans.append(WorkoutPlan(
+                id: plan.id,
+                groupId: plan.workoutPlanGroupId,
+                name: plan.name,
+                versionStatus: plan.versionStatus ?? "draft",
+                versionNumber: plan.versionNumber ?? 1,
+                exercises: []
+            ))
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
         }
@@ -337,6 +344,13 @@ class AppStore {
                 // Backend forked a new draft from a published plan; reload to reflect server state.
                 await loadClientDetail(clientId)
                 return updated.workoutPlanGroupId
+            }
+            // Backfill groupId on the local plan in case it was nil (first PATCH after creation).
+            if let gid = updated.workoutPlanGroupId,
+               let cidx = clients.firstIndex(where: { $0.id == clientId }),
+               let widx = clients[cidx].workoutPlans.firstIndex(where: { $0.id == planId }),
+               clients[cidx].workoutPlans[widx].groupId == nil {
+                clients[cidx].workoutPlans[widx].groupId = gid
             }
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
@@ -371,16 +385,34 @@ class AppStore {
         }
     }
 
-    func createDraftPlan(groupId: String, traineeId: String, name: String, clientId: String) async {
+    @discardableResult
+    func createDraftPlan(groupId: String, traineeId: String, name: String,
+                         exercises: [Exercise] = [], clientId: String) async -> String? {
+        let payload = exercises.map { ex in
+            // Strip server IDs — the backend inserts fresh exercise rows for the new draft.
+            ExercisePayload(
+                id: nil,
+                name: ex.name,
+                type: ex.exerciseType.rawValue,
+                sets: ex.sets,
+                reps: ex.exerciseType == .reps ? ex.reps : nil,
+                durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
+                weightLbs: ex.weightLbs,
+                comment: ex.comment.isEmpty ? nil : ex.comment,
+                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds,
+                isHidden: ex.isHidden
+            )
+        }
         do {
-            let plan = try await api.createDraftInGroup(groupId: groupId, traineeId: traineeId, name: name, exercises: [])
-            guard let cidx = clients.firstIndex(where: { $0.id == clientId }) else { return }
-            clients[cidx].workoutPlans.append(WorkoutPlan(
-                id: plan.id, groupId: groupId, name: plan.name,
-                versionStatus: "draft", versionNumber: 1, exercises: []
-            ))
+            let plan = try await api.createDraftInGroup(
+                groupId: groupId, traineeId: traineeId, name: name, exercises: payload
+            )
+            // Reload so the new draft (with its server-assigned exercise IDs) shows correctly.
+            await loadClientDetail(clientId)
+            return plan.workoutPlanGroupId ?? groupId
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
+            return nil
         }
     }
 

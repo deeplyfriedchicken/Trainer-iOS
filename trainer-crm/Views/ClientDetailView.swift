@@ -16,6 +16,7 @@ struct ClientDetailView: View {
     @State private var planToPublish: WorkoutPlan? = nil
     @State private var expandedSecondaryPlanId: String? = nil
     @State private var reorderingPlanId: String? = nil
+    @State private var swipedPlanId: String? = nil
     @State private var editingExercise: Exercise? = nil
     @State private var editExName = ""
     @State private var editExType: ExerciseType = .reps
@@ -498,9 +499,53 @@ struct ClientDetailView: View {
         if let activePlan {
         let hasBoth = draft != nil && published != nil
         let isDraft = activePlan.isDraft
+        let isSwiped = swipedPlanId == activePlan.id
+        let swipeRevealWidth: CGFloat = 160
 
+        ZStack(alignment: .trailing) {
+            // ── Swipe-reveal action buttons ──
+            HStack(spacing: 0) {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil }
+                    withAnimation(.easeInOut(duration: 0.18).delay(0.05)) {
+                        reorderingPlanId = reorderingPlanId == activePlan.id ? nil : activePlan.id
+                    }
+                } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Reorder").font(.mono(9, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.neonCyan)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(
+                        LinearGradient(colors: [Color.neonCyan.opacity(0.22), Color.neonCyan.opacity(0.12)],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
+                }
+                .buttonStyle(.plain)
 
-        VStack(spacing: 0) {
+                Button { /* delete placeholder — not functional yet */ } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Delete").font(.mono(9, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.neonRed)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(
+                        LinearGradient(colors: [Color.neonRed.opacity(0.22), Color.neonRed.opacity(0.14)],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(width: swipeRevealWidth)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .opacity(isSwiped ? 1 : 0)
+
+            // ── Hero card ──
+            VStack(spacing: 0) {
                 // Hero card
                 VStack(spacing: 0) {
                     // Header
@@ -622,7 +667,18 @@ struct ClientDetailView: View {
                             .buttonStyle(.plain)
                         } else if let gid = groupId, draft == nil {
                             Button {
-                                Task { await store.createDraftPlan(groupId: gid, traineeId: client.id, name: activePlan.name + " (Draft)", clientId: client.id) }
+                                let plan = activePlan
+                                Task {
+                                    if let newGroupId = await store.createDraftPlan(
+                                        groupId: gid,
+                                        traineeId: client.id,
+                                        name: plan.name,
+                                        exercises: plan.exercises,
+                                        clientId: client.id
+                                    ) {
+                                        withAnimation { _ = draftViewGroups.insert(newGroupId) }
+                                    }
+                                }
                             } label: {
                                 Label("New Draft", systemImage: "pencil")
                                     .font(.system(size: 12, weight: .semibold))
@@ -631,22 +687,6 @@ struct ClientDetailView: View {
                                     .padding(.vertical, 9)
                                     .background(Color.neonOrange.opacity(0.1))
                                     .overlay(Capsule().stroke(Color.neonOrange.opacity(0.3), lineWidth: 1))
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if !activePlan.exercises.isEmpty {
-                            Button {
-                                withAnimation { reorderingPlanId = reorderingPlanId == activePlan.id ? nil : activePlan.id }
-                            } label: {
-                                Label("Reorder", systemImage: "arrow.up.arrow.down")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(Color.neonCyan)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 9)
-                                    .background(Color.neonCyan.opacity(0.08))
-                                    .overlay(Capsule().stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
                                     .clipShape(Capsule())
                             }
                             .buttonStyle(.plain)
@@ -681,8 +721,28 @@ struct ClientDetailView: View {
                             .stroke(isDraft ? Color.neonOrange.opacity(0.35) : Color.neonGreen.opacity(0.22) as Color, lineWidth: 1))
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 20))
+                .offset(x: isSwiped ? -swipeRevealWidth : 0)
+                .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isSwiped)
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 20)
+                        .onChanged { value in
+                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                            if value.translation.width < -30, !isSwiped { swipedPlanId = activePlan.id }
+                            else if value.translation.width > 30, isSwiped { swipedPlanId = nil }
+                        }
+                        .onEnded { value in
+                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                swipedPlanId = value.translation.width < -40 ? activePlan.id : nil
+                            }
+                        }
+                )
+                .onTapGesture {
+                    if isSwiped { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil } }
+                }
             }
-        }
+        } // ZStack
+        } // if let activePlan
     }
 
     @ViewBuilder
@@ -857,14 +917,21 @@ struct ClientDetailView: View {
                     Button {
                         let p = plan
                         planToPublish = nil
-                        guard let gid = p.groupId else {
-                            store.error = .serverError(400)
-                            return
-                        }
                         Task {
+                            // groupId may be nil if this plan pre-dates versioning; try a
+                            // fresh reload to pick it up, then retry.
+                            var groupId = p.groupId
+                            if groupId == nil {
+                                await store.loadClientDetail(client.id)
+                                groupId = client.workoutPlans
+                                    .first(where: { $0.id == p.id })?.groupId
+                            }
+                            guard let gid = groupId else {
+                                store.error = .serverError(400)
+                                return
+                            }
                             let ok = await store.publishWorkoutPlan(groupId: gid, plan: p, clientId: client.id)
                             if ok {
-                                // Switch card to show the newly published version
                                 withAnimation { _ = draftViewGroups.remove(gid) }
                             }
                         }
