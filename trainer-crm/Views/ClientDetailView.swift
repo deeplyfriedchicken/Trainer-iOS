@@ -54,6 +54,8 @@ struct ClientDetailView: View {
     @State private var showVideoNameSheet = false
     @State private var videoToDelete: ClientVideo? = nil
     @State private var selectedClientVideo: ClientVideo? = nil
+    @State private var groupIdToDelete: String? = nil
+    @State private var draftPlanToDelete: WorkoutPlan? = nil
 
     private var canDeleteVideos: Bool {
         guard let roles = store.currentUser?.roles else { return false }
@@ -489,6 +491,32 @@ struct ClientDetailView: View {
         .sheet(item: $planToPublish) { plan in
             publishConfirmSheet(plan: plan)
         }
+        .alert("Delete workout plan group?", isPresented: Binding(
+            get: { groupIdToDelete != nil },
+            set: { if !$0 { groupIdToDelete = nil } }
+        )) {
+            Button("Delete", role: .destructive) {
+                guard let gid = groupIdToDelete else { return }
+                groupIdToDelete = nil
+                Task { await store.deleteWorkoutPlanGroup(groupId: gid, clientId: client.id) }
+            }
+            Button("Cancel", role: .cancel) { groupIdToDelete = nil }
+        } message: {
+            Text("This will permanently delete the group and all its draft plans. Published plans cannot be deleted.")
+        }
+        .alert("Delete this draft?", isPresented: Binding(
+            get: { draftPlanToDelete != nil },
+            set: { if !$0 { draftPlanToDelete = nil } }
+        )) {
+            Button("Delete Draft", role: .destructive) {
+                guard let plan = draftPlanToDelete else { return }
+                draftPlanToDelete = nil
+                Task { await store.deleteWorkoutPlan(planId: plan.id, clientId: client.id) }
+            }
+            Button("Cancel", role: .cancel) { draftPlanToDelete = nil }
+        } message: {
+            Text("This draft will be permanently deleted. The published version (if any) will remain.")
+        }
     }
 
     @ViewBuilder
@@ -525,7 +553,10 @@ struct ClientDetailView: View {
                 }
                 .buttonStyle(.plain)
 
-                Button { /* delete placeholder — not functional yet */ } label: {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil }
+                    groupIdToDelete = groupId
+                } label: {
                     VStack(spacing: 5) {
                         Image(systemName: "trash")
                             .font(.system(size: 17, weight: .semibold))
@@ -687,6 +718,22 @@ struct ClientDetailView: View {
                                     .padding(.vertical, 9)
                                     .background(Color.neonOrange.opacity(0.1))
                                     .overlay(Capsule().stroke(Color.neonOrange.opacity(0.3), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if isDraft, let draftPlan = draft {
+                            Button {
+                                draftPlanToDelete = draftPlan
+                            } label: {
+                                Label("Delete Draft", systemImage: "trash")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.neonRed)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(Color.neonRed.opacity(0.08))
+                                    .overlay(Capsule().stroke(Color.neonRed.opacity(0.25), lineWidth: 1))
                                     .clipShape(Capsule())
                             }
                             .buttonStyle(.plain)

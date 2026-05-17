@@ -244,6 +244,18 @@ final class APIClient {
         return wrapper.data
     }
 
+    /// Soft-deletes a workout plan group and all its non-published plans.
+    /// Throws APIError.serverError(409) if the group contains a published plan.
+    func deleteWorkoutPlanGroup(id: String) async throws {
+        try await delete("/api/workout-plan-groups/\(id)")
+    }
+
+    /// Soft-deletes a single workout plan (draft or archived only).
+    /// Throws APIError.serverError(409) if the plan is published.
+    func deleteWorkoutPlan(id: String) async throws {
+        try await delete("/api/workout-plans/\(id)")
+    }
+
     // No server endpoint for session quality yet — updates are local-only.
 
     func fetchVideos(limit: Int = 20, offset: Int = 0) async throws -> [VideoListItemResponse] {

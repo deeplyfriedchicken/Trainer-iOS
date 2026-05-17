@@ -300,6 +300,38 @@ class AppStore {
         }
     }
 
+    /// Soft-deletes an entire workout plan group (and its non-published plans).
+    /// Returns false and sets self.error if the server rejects (e.g. published plan exists).
+    @discardableResult
+    func deleteWorkoutPlanGroup(groupId: String, clientId: String) async -> Bool {
+        do {
+            try await api.deleteWorkoutPlanGroup(id: groupId)
+            if let cidx = clients.firstIndex(where: { $0.id == clientId }) {
+                clients[cidx].workoutPlans.removeAll { $0.groupId == groupId }
+            }
+            return true
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return false
+        }
+    }
+
+    /// Soft-deletes a single draft workout plan.
+    /// Returns false and sets self.error if the server rejects (e.g. plan is published).
+    @discardableResult
+    func deleteWorkoutPlan(planId: String, clientId: String) async -> Bool {
+        do {
+            try await api.deleteWorkoutPlan(id: planId)
+            if let cidx = clients.firstIndex(where: { $0.id == clientId }) {
+                clients[cidx].workoutPlans.removeAll { $0.id == planId }
+            }
+            return true
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return false
+        }
+    }
+
     func createWorkoutPlan(clientId: String, name: String) async {
         do {
             let plan = try await api.createWorkoutPlan(traineeId: clientId, name: name)
