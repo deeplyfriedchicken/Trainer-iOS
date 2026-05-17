@@ -774,14 +774,16 @@ struct ClientDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 20))
                 .offset(x: isSwiped ? -swipeRevealWidth : 0)
                 .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isSwiped)
-                .highPriorityGesture(
+                .simultaneousGesture(
                     DragGesture(minimumDistance: 20)
                         .onChanged { value in
+                            guard !isReordering else { return }
                             guard abs(value.translation.width) > abs(value.translation.height) else { return }
                             if value.translation.width < -30, !isSwiped { swipedPlanId = activePlan.id }
                             else if value.translation.width > 30, isSwiped { swipedPlanId = nil }
                         }
                         .onEnded { value in
+                            guard !isReordering else { return }
                             guard abs(value.translation.width) > abs(value.translation.height) else { return }
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                                 swipedPlanId = value.translation.width < -40 ? activePlan.id : nil
@@ -859,7 +861,7 @@ struct ClientDetailView: View {
             if isReordering {
                 // 6-dot grip handle — drag to reorder
                 ExerciseGripHandle()
-                    .gesture(
+                    .highPriorityGesture(
                         DragGesture(minimumDistance: 1, coordinateSpace: .global)
                             .onChanged { value in
                                 let rowH = ExerciseDragState.rowHeight
@@ -917,7 +919,8 @@ struct ClientDetailView: View {
         .overlay(RoundedRectangle(cornerRadius: exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? 10 : 0)
             .stroke(exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? Color.neonCyan.opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1))
         .shadow(color: exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? Color.black.opacity(0.45) : .clear, radius: 12, y: 6)
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: !isReordering) {
+            if !isReordering {
             Button(role: .destructive) {
                 guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
                 client.workoutPlans[wi].exercises.removeAll { $0.id == ex.id }
@@ -930,6 +933,7 @@ struct ClientDetailView: View {
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+            } // !isReordering
         }
     }
 
