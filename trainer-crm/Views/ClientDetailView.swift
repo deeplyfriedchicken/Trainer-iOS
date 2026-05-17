@@ -1962,31 +1962,7 @@ struct WorkoutSessionCard: View {
 
                 // ── Exercise + Per-set rows ──
                 if !workout.exercises.isEmpty {
-                    VStack(spacing: 0) {
-                        ForEach(workout.exercises) { ex in
-                            VStack(spacing: 0) {
-                                // Exercise header
-                                HStack(spacing: 10) {
-                                    NumberBadge(number: workout.exercises.firstIndex(where: { $0.id == ex.id }).map { $0 + 1 } ?? 1, color: .neonCyan)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(ex.name).font(.body(13, weight: .semibold)).foregroundStyle(.white)
-                                        Text(ex.displaySets).font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 14).padding(.vertical, 10)
-
-                                // Per-set rows
-                                if !ex.setsData.isEmpty {
-                                    ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
-                                        workoutSetRow(index: j, set: s)
-                                    }
-                                }
-                            }
-                            .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
-                        }
-                    }
-                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+                    workoutExercisesSection
                 }
 
                 // ── Session Quality Rating ──
@@ -2069,6 +2045,36 @@ struct WorkoutSessionCard: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.09), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .sheet(isPresented: $showTagsSheet) { tagsSheet }
+    }
+
+    private var workoutExercisesSection: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
+                workoutExerciseBlock(index: i, exercise: ex)
+            }
+        }
+        .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+    }
+
+    @ViewBuilder
+    private func workoutExerciseBlock(index i: Int, exercise ex: Exercise) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                NumberBadge(number: i + 1, color: .neonCyan)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(ex.name).font(.body(13, weight: .semibold)).foregroundStyle(.white)
+                    Text(ex.displaySets).font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            if !ex.setsData.isEmpty {
+                ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
+                    workoutSetRow(index: j, set: s)
+                }
+            }
+        }
+        .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
     }
 
     @ViewBuilder
