@@ -430,22 +430,41 @@ struct ClientDetailView: View {
 
     // MARK: - Workout Plans Tab
 
-    private var planGroups: [(groupId: String?, plans: [WorkoutPlan])] {
-        var byGroup: [(String?, [WorkoutPlan])] = []
-        var seen = Set<String>()
-        var ungrouped: [WorkoutPlan] = []
+    // One entry per logical plan group, with a stable unique ID.
+    private struct PlanGroup: Identifiable {
+        let id: String       // groupId, or plan.id for ungrouped legacy plans
+        let groupId: String?
+        let draft: WorkoutPlan?
+        let published: WorkoutPlan?
+    }
+
+    private var planGroups: [PlanGroup] {
+        var groups: [PlanGroup] = []
+        var seenGroups = Set<String>()
+
         for plan in client.workoutPlans {
             if let gid = plan.groupId {
-                if !seen.contains(gid) {
-                    seen.insert(gid)
+                if !seenGroups.contains(gid) {
+                    seenGroups.insert(gid)
                     let members = client.workoutPlans.filter { $0.groupId == gid }
-                    byGroup.append((gid, members))
+                    // Keep only the single latest draft and single published per group.
+                    let latestDraft = members
+                        .filter { $0.isDraft }
+                        .max(by: { $0.versionNumber < $1.versionNumber })
+                    let currentPublished = members
+                        .filter { $0.isPublished }
+                        .max(by: { $0.versionNumber < $1.versionNumber })
+                    groups.append(PlanGroup(id: gid, groupId: gid,
+                                            draft: latestDraft, published: currentPublished))
                 }
             } else {
-                ungrouped.append(plan)
+                // Legacy ungrouped plan — use its own ID so ForEach stays stable.
+                groups.append(PlanGroup(id: plan.id, groupId: nil,
+                                        draft: plan.isDraft ? plan : nil,
+                                        published: plan.isPublished ? plan : nil))
             }
         }
-        return byGroup + ungrouped.map { (nil, [$0]) }
+        return groups
     }
 
     private var workoutPlansContent: some View {
@@ -459,8 +478,8 @@ struct ClientDetailView: View {
                                subtitle: "Tap + New to create the first plan")
                     .padding(.horizontal, 16)
             } else {
-                ForEach(planGroups, id: \.groupId) { group in
-                    planGroupCard(group.plans, groupId: group.groupId)
+                ForEach(planGroups) { group in
+                    planGroupCard(draft: group.draft, published: group.published, groupId: group.groupId)
                         .padding(.horizontal, 16).padding(.bottom, 14)
                 }
             }
@@ -472,15 +491,14 @@ struct ClientDetailView: View {
     }
 
     @ViewBuilder
-    private func planGroupCard(_ plans: [WorkoutPlan], groupId: String?) -> some View {
-        let draft = plans.first(where: { $0.isDraft })
-        let published = plans.first(where: { $0.isPublished })
+    private func planGroupCard(draft: WorkoutPlan?, published: WorkoutPlan?, groupId: String?) -> some View {
         let showingDraft = groupId.map { draftViewGroups.contains($0) } ?? false
         let activePlan = showingDraft ? (draft ?? published) : (published ?? draft)
 
         if let activePlan {
         let hasBoth = draft != nil && published != nil
         let isDraft = activePlan.isDraft
+
 
         VStack(spacing: 0) {
                 // Hero card
@@ -839,8 +857,17 @@ struct ClientDetailView: View {
                     Button {
                         let p = plan
                         planToPublish = nil
-                        guard let gid = p.groupId else { return }
-                        Task { await store.publishWorkoutPlan(groupId: gid, plan: p, clientId: client.id) }
+                        guard let gid = p.groupId else {
+                            store.error = .serverError(400)
+                            return
+                        }
+                        Task {
+                            let ok = await store.publishWorkoutPlan(groupId: gid, plan: p, clientId: client.id)
+                            if ok {
+                                // Switch card to show the newly published version
+                                withAnimation { _ = draftViewGroups.remove(gid) }
+                            }
+                        }
                     } label: {
                         Text("Publish Now")
                             .font(.system(size: 13, weight: .semibold))

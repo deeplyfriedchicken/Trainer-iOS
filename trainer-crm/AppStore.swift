@@ -344,7 +344,8 @@ class AppStore {
         return nil
     }
 
-    func publishWorkoutPlan(groupId: String, plan: WorkoutPlan, clientId: String) async {
+    @discardableResult
+    func publishWorkoutPlan(groupId: String, plan: WorkoutPlan, clientId: String) async -> Bool {
         let payload = plan.exercises.map { ex in
             ExercisePayload(
                 id: ex.serverId,
@@ -362,8 +363,11 @@ class AppStore {
         do {
             _ = try await api.publishWorkoutPlan(groupId: groupId, name: plan.name, exercises: payload)
             await loadClientDetail(clientId)
+            refreshMessage = "\(plan.name) published"
+            return true
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
+            return false
         }
     }
 
