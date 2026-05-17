@@ -45,6 +45,7 @@ struct WorkoutPlan: Identifiable {
     var name: String
     var versionStatus: String = "published"   // "draft" | "published"
     var versionNumber: Int = 1
+    var occurredAt: Date? = nil
     var exercises: [Exercise]
 
     var isDraft: Bool { versionStatus == "draft" }
