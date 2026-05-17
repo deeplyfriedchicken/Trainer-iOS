@@ -93,8 +93,10 @@ struct ClientDetailView: View {
                        let ei = client.workoutPlans[wi].exercises.firstIndex(where: { $0.id == target.exerciseId }) {
                         client.workoutPlans[wi].exercises[ei].videoIds.append(serverVideoId)
                         let w = client.workoutPlans[wi]
-                        await store.updateWorkoutPlan(planId: target.workoutId, clientId: clientId,
-                                                      name: w.name, exercises: w.exercises)
+                        if let groupId = await store.updateWorkoutPlan(planId: target.workoutId, clientId: clientId,
+                                                                        name: w.name, exercises: w.exercises) {
+                            _ = draftViewGroups.insert(groupId)
+                        }
                     }
                 } onExit: {
                     showRecording = false
@@ -846,15 +848,17 @@ struct ClientDetailView: View {
         }
 
         let workout = client.workoutPlans[wi]
+        showEditExercise = false
         Task {
-            await store.updateWorkoutPlan(
+            if let groupId = await store.updateWorkoutPlan(
                 planId: workoutId,
                 clientId: client.id,
                 name: workout.name,
                 exercises: workout.exercises
-            )
+            ) {
+                _ = draftViewGroups.insert(groupId)
+            }
         }
-        showEditExercise = false
     }
 
     private var editExerciseSheet: some View {

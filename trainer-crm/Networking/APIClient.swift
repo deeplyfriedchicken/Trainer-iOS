@@ -466,6 +466,9 @@ struct WorkoutPlanResponse: Decodable, Identifiable, Sendable {
     let id: String
     let name: String
     let traineeId: String
+    let workoutPlanGroupId: String?
+    let versionStatus: String?
+    let versionNumber: Int?
     let occurredAt: Date?
     let comment: String?
     let exercises: [ExerciseResponse]?

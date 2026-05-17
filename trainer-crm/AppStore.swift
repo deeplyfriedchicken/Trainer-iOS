@@ -322,7 +322,12 @@ class AppStore {
         }
     }
 
-    func updateWorkoutPlan(planId: String, clientId: String, name: String, exercises: [Exercise]) async {
+    /// PATCHes a workout plan. The backend handles forking automatically:
+    /// - draft → updates in place, returns same ID
+    /// - published → forks a new draft, returns new ID with versionStatus "draft"
+    /// Returns the groupId when a fork occurred so the UI can switch to draft view.
+    @discardableResult
+    func updateWorkoutPlan(planId: String, clientId: String, name: String, exercises: [Exercise]) async -> String? {
         let payload = exercises.map { ex in
             ExercisePayload(
                 id: ex.serverId,
@@ -337,10 +342,17 @@ class AppStore {
             )
         }
         do {
-            _ = try await api.updateWorkoutPlan(id: planId, name: name, exercises: payload)
+            let updated = try await api.updateWorkoutPlan(id: planId, name: name, exercises: payload)
+            let forked = updated.id != planId
+            if forked {
+                // Backend forked a new draft from a published plan; reload to reflect server state.
+                await loadClientDetail(clientId)
+                return updated.workoutPlanGroupId
+            }
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
         }
+        return nil
     }
 
     func publishWorkoutPlan(groupId: String, plan: WorkoutPlan, clientId: String) async {
