@@ -511,6 +511,7 @@ struct ClientDetailView: View {
         let hasBoth = draft != nil && published != nil
         let isDraft = activePlan.isDraft
         let isSwiped = swipedPlanId == activePlan.id
+        let isReordering = reorderingPlanId == activePlan.id
         let swipeRevealWidth: CGFloat = 160
 
         ZStack(alignment: .trailing) {
@@ -639,7 +640,6 @@ struct ClientDetailView: View {
                     // Exercises list
                     if !activePlan.exercises.isEmpty {
                         Divider().background(Color.white.opacity(0.07)).padding(.horizontal, 16)
-                        let isReordering = reorderingPlanId == activePlan.id
                         ForEach(Array(activePlan.exercises.enumerated()), id: \.element.id) { i, ex in
                             let isDraggingThis = exerciseDrag?.planId == activePlan.id && exerciseDrag?.fromIdx == i
                             planExerciseRow(index: i, exercise: ex, plan: activePlan, isReordering: isReordering)
