@@ -745,20 +745,22 @@ struct ClientDetailView: View {
                             .buttonStyle(.plain)
                         }
 
-                        Button {
-                            targetWorkoutId = activePlan.id
-                            openExerciseForm(nil)
-                        } label: {
-                            Label("Add Exercise", systemImage: "plus")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(Color.white.opacity(0.8))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 9)
-                                .background(Color.white.opacity(0.06))
-                                .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
-                                .clipShape(Capsule())
+                        if isDraft {
+                            Button {
+                                targetWorkoutId = activePlan.id
+                                openExerciseForm(nil)
+                            } label: {
+                                Label("Add Exercise", systemImage: "plus")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.white.opacity(0.8))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(Color.white.opacity(0.06))
+                                    .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 10)
                     .background(Color.black.opacity(0.18))
