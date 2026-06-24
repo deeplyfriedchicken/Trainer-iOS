@@ -784,7 +784,6 @@ struct VideoTagEntryResponse: Decodable, Sendable {
 
 struct PortalLinkResponse: Decodable, Sendable {
     let url: String
-    let expiresAt: Date
 }
 
 // MARK: - Chat types
