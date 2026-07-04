@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		44E214472FF8C069002A32B1 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 44E214462FF8C069002A32B1 /* GoogleService-Info.plist */; };
 		44F3D65F2FB5C6280058EB19 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 44F3D65E2FB5C6280058EB19 /* FirebaseMessaging */; };
 /* End PBXBuildFile section */
 
@@ -28,6 +29,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		44E214462FF8C069002A32B1 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		44FE46D82FA46A6E00C03F71 /* trainer-crm.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "trainer-crm.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		44FE46E72FA46A7000C03F71 /* trainer-crmTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "trainer-crmTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		44FE46F12FA46A7000C03F71 /* trainer-crmUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "trainer-crmUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -97,6 +99,7 @@
 				44FE46EA2FA46A7000C03F71 /* trainer-crmTests */,
 				44FE46F42FA46A7000C03F71 /* trainer-crmUITests */,
 				44FE46D92FA46A6E00C03F71 /* Products */,
+				44E214462FF8C069002A32B1 /* GoogleService-Info.plist */,
 			);
 			sourceTree = "<group>";
 		};
@@ -234,6 +237,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				44E214472FF8C069002A32B1 /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -439,7 +443,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.02;
+				MARKETING_VERSION = 1.03;
 				PRODUCT_BUNDLE_IDENTIFIER = "tbd.fit.trainer-crm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -479,7 +483,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.02;
+				MARKETING_VERSION = 1.03;
 				PRODUCT_BUNDLE_IDENTIFIER = "tbd.fit.trainer-crm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
