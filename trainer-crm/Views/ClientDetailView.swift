@@ -7,11 +7,33 @@ struct ClientDetailView: View {
     @Binding var client: Client
     let onBack: () -> Void
 
-    @State private var activeTab: DetailTab = .overview
+    @State private var activeTab: DetailTab = .workoutPlans
     @State private var showRecording = false
     @State private var showAddWorkout = false
     @State private var showEditExercise = false
     @State private var targetWorkoutId: String? = nil
+    @State private var draftViewGroups: Set<String> = []   // groupIds showing draft view
+    @State private var planToPublish: WorkoutPlan? = nil
+    @State private var expandedSecondaryPlanId: String? = nil
+    @State private var reorderingPlanId: String? = nil
+    @State private var swipedPlanId: String? = nil
+    @State private var planCardDragActive = false  // true while the card swipe drag is in motion
+    @State private var exerciseDrag: ExerciseDragState? = nil
+
+    private struct ExerciseDragState {
+        let planId: String
+        var fromIdx: Int        // current position of dragged item (updates on each swap)
+        var dy: CGFloat         // raw gesture translation
+        var lastSwapY: CGFloat  // dy at which the last swap occurred
+        static let rowHeight: CGFloat = 54
+        var visualOffset: CGFloat { dy - lastSwapY }
+    }
+
+    // Only the dragged row gets an offset — other rows reorder live via the array.
+    private func exerciseRowOffset(i: Int, planId: String) -> CGFloat {
+        guard let d = exerciseDrag, d.planId == planId, i == d.fromIdx else { return 0 }
+        return d.visualOffset
+    }
     @State private var editingExercise: Exercise? = nil
     @State private var editExName = ""
     @State private var editExType: ExerciseType = .reps
@@ -19,7 +41,9 @@ struct ClientDetailView: View {
     @State private var editExReps = "10"
     @State private var editExDuration = "30"
     @State private var editExNotes = ""
+    @State private var editExWeight = ""
     @State private var editExVideoIds: Set<String> = []
+    @State private var editExIsHidden = false
     @State private var newWorkoutName = ""
     @State private var playerItem: AVPlayerItem? = nil
     @State private var playingVideo: ClientVideo? = nil
@@ -47,6 +71,8 @@ struct ClientDetailView: View {
     @State private var showVideoNameSheet = false
     @State private var videoToDelete: ClientVideo? = nil
     @State private var selectedClientVideo: ClientVideo? = nil
+    @State private var groupIdToDelete: String? = nil
+    @State private var draftPlanToDelete: WorkoutPlan? = nil
 
     private var canDeleteVideos: Bool {
         guard let roles = store.currentUser?.roles else { return false }
@@ -64,10 +90,9 @@ struct ClientDetailView: View {
     }
 
     enum DetailTab: String, CaseIterable {
-        case overview, workouts, workoutPlans, videos, chat
+        case workouts, workoutPlans, videos, chat
         var displayName: String {
             switch self {
-            case .overview:     return "Overview"
             case .workouts:     return "Workouts"
             case .workoutPlans: return "Plans"
             case .videos:       return "Videos"
@@ -89,8 +114,10 @@ struct ClientDetailView: View {
                        let ei = client.workoutPlans[wi].exercises.firstIndex(where: { $0.id == target.exerciseId }) {
                         client.workoutPlans[wi].exercises[ei].videoIds.append(serverVideoId)
                         let w = client.workoutPlans[wi]
-                        await store.updateWorkoutPlan(planId: target.workoutId, clientId: clientId,
-                                                      name: w.name, exercises: w.exercises)
+                        if let groupId = await store.updateWorkoutPlan(planId: target.workoutId, clientId: clientId,
+                                                                        name: w.name, exercises: w.exercises) {
+                            _ = draftViewGroups.insert(groupId)
+                        }
                     }
                 } onExit: {
                     showRecording = false
@@ -130,9 +157,13 @@ struct ClientDetailView: View {
                 await store.loadClientDetail(client.id)
             }
         }
-        .onChange(of: activeTab) { _, newTab in
-            if newTab == .chat, chatId == nil {
-                Task { await loadChat() }
+        .task(id: activeTab) {
+            guard activeTab == .chat else { return }
+            if chatId == nil { await loadChat() }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await pollChatSilently()
             }
         }
         .sheet(isPresented: $showEditExercise) {
@@ -331,7 +362,6 @@ struct ClientDetailView: View {
             } else {
                 ScrollView {
                     switch activeTab {
-                    case .overview:     overviewContent
                     case .workouts:     workoutsContent
                     case .workoutPlans: workoutPlansContent
                     case .videos:       videosContent
@@ -344,60 +374,32 @@ struct ClientDetailView: View {
         .animation(.easeInOut(duration: 0.25), value: isChatFocused && activeTab == .chat)
     }
 
-    // MARK: - Overview Tab
-
-    private var overviewContent: some View {
-        VStack(spacing: 0) {
-            SectionHeader(title: "Info")
-
-            ForEach([
-                ("Plan", client.plan),
-                ("Status", client.status.rawValue.capitalized),
-                ("Last workout", client.lastSeen),
-            ], id: \.0) { row in
-                HStack {
-                    Text(row.0).font(.mono(11)).foregroundStyle(Color.white.opacity(0.45))
-                    Spacer()
-                    Text(row.1).font(.body(14, weight: .medium)).foregroundStyle(.white)
-                }
-                .padding(.horizontal, 20).padding(.vertical, 11)
-                Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1).padding(.horizontal, 20)
-            }
-
-            SectionHeader(title: "Recent Videos",
-                          action: client.videos.isEmpty ? nil : { activeTab = .videos },
-                          actionLabel: "See All")
-
-            if client.videos.isEmpty {
-                Text("No videos yet · Start recording a session")
-                    .font(.body(13))
-                    .foregroundStyle(Color.white.opacity(0.3))
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
-            } else if let v = client.videos.first {
-                VideoThumb(video: v) {
-                    playingVideo = v
-                }
-                .padding(.horizontal, 16).padding(.bottom, 10)
-            }
-        }
-        .padding(.bottom, 16)
-    }
-
-    // MARK: - Workouts Tab
-
     // MARK: - Workouts Tab
 
     private var workoutsContent: some View {
         VStack(spacing: 0) {
-            SectionHeader(title: "Workouts (\(client.workouts.count))")
+            SectionHeader(title: "WORKOUTS · \(client.workouts.count)")
 
             if client.workouts.isEmpty {
                 EmptyStateView(systemImage: "figure.run.circle", title: "No workouts logged yet")
             } else {
                 ForEach(client.workouts) { workout in
-                    WorkoutSessionCard(workout: workout)
-                        .padding(.horizontal, 16).padding(.bottom, 12)
+                    WorkoutSessionCard(
+                        workout: workout,
+                        onTagsUpdated: { tags in
+                            if let wi = client.workouts.firstIndex(where: { $0.id == workout.id }) {
+                                client.workouts[wi].tags = tags
+                            }
+                            Task { await store.setWorkoutTags(clientId: client.id, workoutId: workout.id, tags: tags) }
+                        },
+                        onSessionQualityChanged: { q in
+                            if let wi = client.workouts.firstIndex(where: { $0.id == workout.id }) {
+                                client.workouts[wi].sessionQuality = q
+                            }
+                            store.updateSessionQuality(clientId: client.id, workoutId: workout.id, sessionQuality: q)
+                        }
+                    )
+                    .padding(.horizontal, 16).padding(.bottom, 14)
                 }
             }
         }
@@ -406,54 +408,629 @@ struct ClientDetailView: View {
 
     // MARK: - Workout Plans Tab
 
+    // One entry per logical plan group, with a stable unique ID.
+    private struct PlanGroup: Identifiable {
+        let id: String       // groupId, or plan.id for ungrouped legacy plans
+        let groupId: String?
+        let draft: WorkoutPlan?
+        let published: WorkoutPlan?
+        // Sort key: the published plan's occurredAt (stable — never changes after publish).
+        // Falls back to draft's occurredAt for draft-only groups.
+        var sortDate: Date? { published?.occurredAt ?? draft?.occurredAt }
+    }
+
+    private var planGroups: [PlanGroup] {
+        var groups: [PlanGroup] = []
+        var seenGroups = Set<String>()
+
+        for plan in client.workoutPlans {
+            if let gid = plan.groupId {
+                if !seenGroups.contains(gid) {
+                    seenGroups.insert(gid)
+                    let members = client.workoutPlans.filter { $0.groupId == gid }
+                    let latestDraft = members
+                        .filter { $0.isDraft }
+                        .max(by: { $0.versionNumber < $1.versionNumber })
+                    let currentPublished = members
+                        .filter { $0.isPublished }
+                        .max(by: { $0.versionNumber < $1.versionNumber })
+                    groups.append(PlanGroup(id: gid, groupId: gid,
+                                            draft: latestDraft, published: currentPublished))
+                }
+            } else {
+                groups.append(PlanGroup(id: plan.id, groupId: nil,
+                                        draft: plan.isDraft ? plan : nil,
+                                        published: plan.isPublished ? plan : nil))
+            }
+        }
+
+        // Sort newest-first by the published plan's occurredAt (immutable once published).
+        // This means creating or editing drafts never reorders the list.
+        return groups.sorted {
+            ($0.sortDate ?? .distantPast) > ($1.sortDate ?? .distantPast)
+        }
+    }
+
     private var workoutPlansContent: some View {
         VStack(spacing: 0) {
-            SectionHeader(title: "Workout Plans (\(client.workoutPlans.count))",
+            SectionHeader(title: "WORKOUT PLANS · \(planGroups.count)",
                           action: { showAddWorkout = true },
                           actionLabel: "+ New")
 
-            if client.workoutPlans.isEmpty {
-                Text("No workout plans yet")
-                    .font(.body(13)).foregroundStyle(Color.white.opacity(0.3))
-                    .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 40)
+            if planGroups.isEmpty {
+                EmptyStateView(systemImage: "dumbbell", title: "No workout plans yet",
+                               subtitle: "Tap + New to create the first plan")
+                    .padding(.horizontal, 16)
             } else {
-                ForEach(client.workoutPlans) { workout in
-                    WorkoutPlanCard(
-                        workout: workout,
-                        videos: client.videos,
-                        onAddExercise: {
-                            targetWorkoutId = workout.id
-                            openExerciseForm(nil)
-                        },
-                        onEditExercise: { ex in
-                            targetWorkoutId = workout.id
-                            openExerciseForm(ex)
-                        },
-                        onRename: { newName in
-                            guard let wi = client.workoutPlans.firstIndex(where: { $0.id == workout.id }) else { return }
-                            client.workoutPlans[wi].name = newName
-                            Task {
-                                await store.updateWorkoutPlan(
-                                    planId: workout.id,
-                                    clientId: client.id,
-                                    name: newName,
-                                    exercises: client.workoutPlans[wi].exercises
-                                )
-                            }
-                        },
-                        onPlayVideos: { vids in
-                            galleryVideos = vids
-                            showVideoGallery = true
-                        },
-                        onRecordForExercise: { ex in
-                            exerciseRecordTarget = (workoutId: workout.id, exerciseId: ex.id)
-                        }
-                    )
-                    .padding(.horizontal, 16).padding(.bottom, 12)
+                ForEach(planGroups) { group in
+                    planGroupCard(draft: group.draft, published: group.published, groupId: group.groupId)
+                        .padding(.horizontal, 16).padding(.bottom, 14)
                 }
             }
         }
         .padding(.bottom, 16)
+        .sheet(item: $planToPublish) { plan in
+            publishConfirmSheet(plan: plan)
+        }
+        .alert("Delete workout plan group?", isPresented: Binding(
+            get: { groupIdToDelete != nil },
+            set: { if !$0 { groupIdToDelete = nil } }
+        )) {
+            Button("Delete", role: .destructive) {
+                guard let gid = groupIdToDelete else { return }
+                groupIdToDelete = nil
+                Task { await store.deleteWorkoutPlanGroup(groupId: gid, clientId: client.id) }
+            }
+            Button("Cancel", role: .cancel) { groupIdToDelete = nil }
+        } message: {
+            Text("This will permanently delete the group and all its draft plans. Published plans cannot be deleted.")
+        }
+        .alert("Delete this draft?", isPresented: Binding(
+            get: { draftPlanToDelete != nil },
+            set: { if !$0 { draftPlanToDelete = nil } }
+        )) {
+            Button("Delete Draft", role: .destructive) {
+                guard let plan = draftPlanToDelete else { return }
+                draftPlanToDelete = nil
+                Task { await store.deleteWorkoutPlan(planId: plan.id, clientId: client.id) }
+            }
+            Button("Cancel", role: .cancel) { draftPlanToDelete = nil }
+        } message: {
+            Text("This draft will be permanently deleted. The published version (if any) will remain.")
+        }
+    }
+
+    @ViewBuilder
+    private func planGroupCard(draft: WorkoutPlan?, published: WorkoutPlan?, groupId: String?) -> some View {
+        let showingDraft = groupId.map { draftViewGroups.contains($0) } ?? false
+        let activePlan = showingDraft ? (draft ?? published) : (published ?? draft)
+
+        if let activePlan {
+        let hasBoth = draft != nil && published != nil
+        let isDraft = activePlan.isDraft
+        let isSwiped = swipedPlanId == activePlan.id
+        let isReordering = reorderingPlanId == activePlan.id
+        // Reveal width: 160 (two buttons) for drafts, 80 (delete only) for published.
+        let swipeRevealWidth: CGFloat = isDraft ? 160 : 80
+
+        ZStack(alignment: .trailing) {
+            // ── Swipe-reveal action buttons ──
+            HStack(spacing: 0) {
+                if isDraft {
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil }
+                        withAnimation(.easeInOut(duration: 0.18).delay(0.05)) {
+                            reorderingPlanId = reorderingPlanId == activePlan.id ? nil : activePlan.id
+                        }
+                    } label: {
+                        VStack(spacing: 5) {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.system(size: 17, weight: .semibold))
+                            Text("Reorder").font(.mono(9, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.neonCyan)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(
+                            LinearGradient(colors: [Color.neonCyan.opacity(0.22), Color.neonCyan.opacity(0.12)],
+                                           startPoint: .top, endPoint: .bottom)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil }
+                    groupIdToDelete = groupId
+                } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Delete").font(.mono(9, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.neonRed)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(
+                        LinearGradient(colors: [Color.neonRed.opacity(0.22), Color.neonRed.opacity(0.14)],
+                                       startPoint: .top, endPoint: .bottom)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(width: swipeRevealWidth)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .opacity(isSwiped ? 1 : 0)
+
+            // ── Hero card ──
+            VStack(spacing: 0) {
+                // Hero card — disable inner controls when swiped so the
+                // swipe-reveal is the only interactive target
+                VStack(spacing: 0) {
+                    // Header
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            // Status kicker row
+                            HStack(spacing: 8) {
+                                Text(isDraft ? "DRAFT" : "PUBLISHED")
+                                    .font(.mono(9, weight: .bold))
+                                    .foregroundStyle(isDraft ? Color.neonOrange : Color.neonGreen)
+                                    .padding(.horizontal, 7).padding(.vertical, 3)
+                                    .background((isDraft ? Color.neonOrange : Color.neonGreen).opacity(0.12))
+                                    .overlay(Capsule().stroke((isDraft ? Color.neonOrange : Color.neonGreen).opacity(0.35), lineWidth: 1))
+                                    .clipShape(Capsule())
+
+                                if hasBoth, let gid = groupId {
+                                    // Version toggle
+                                    HStack(spacing: 0) {
+                                        Button {
+                                            withAnimation(.easeInOut(duration: 0.18)) { _ = draftViewGroups.remove(gid) }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Circle().fill(Color.neonGreen).frame(width: 5, height: 5)
+                                                    .shadow(color: showingDraft ? .clear : Color.neonGreen, radius: 4)
+                                                Text("Published").font(.mono(9, weight: .bold))
+                                                    .foregroundStyle(!showingDraft ? .white : Color.white.opacity(0.4))
+                                            }
+                                            .padding(.horizontal, 8).padding(.vertical, 4)
+                                            .background(!showingDraft ? Color.white.opacity(0.08) : .clear)
+                                            .clipShape(Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Button {
+                                            withAnimation(.easeInOut(duration: 0.18)) { _ = draftViewGroups.insert(gid) }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Circle().fill(Color.neonOrange).frame(width: 5, height: 5)
+                                                    .shadow(color: showingDraft ? Color.neonOrange : .clear, radius: 4)
+                                                Text("Draft").font(.mono(9, weight: .bold))
+                                                    .foregroundStyle(showingDraft ? .white : Color.white.opacity(0.4))
+                                            }
+                                            .padding(.horizontal, 8).padding(.vertical, 4)
+                                            .background(showingDraft ? Color.white.opacity(0.08) : .clear)
+                                            .clipShape(Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(2)
+                                    .background(Color.black.opacity(0.3) as Color)
+                                    .overlay(Capsule().stroke(Color.white.opacity(0.08) as Color, lineWidth: 1))
+                                    .clipShape(Capsule())
+                                }
+                            }
+
+                            Text(activePlan.name)
+                                .font(.display(22))
+                                .foregroundStyle(.white)
+                                .lineLimit(2)
+
+                            HStack(spacing: 6) {
+                                Text("\(activePlan.exercises.count) exercises")
+                                    .font(.mono(10.5))
+                                    .foregroundStyle(Color.white.opacity(0.42))
+                                if activePlan.versionNumber > 1 {
+                                    Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                                    Text("v\(activePlan.versionNumber)")
+                                        .font(.mono(10.5))
+                                        .foregroundStyle(Color.white.opacity(0.42))
+                                }
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
+
+                    // Exercises list
+                    if !activePlan.exercises.isEmpty {
+                        Divider().background(Color.white.opacity(0.07)).padding(.horizontal, 16)
+                        ForEach(Array(activePlan.exercises.enumerated()), id: \.element.id) { i, ex in
+                            let isDraggingThis = exerciseDrag?.planId == activePlan.id && exerciseDrag?.fromIdx == i
+                            planExerciseRow(index: i, exercise: ex, plan: activePlan, isReordering: isReordering)
+                                .offset(y: exerciseRowOffset(i: i, planId: activePlan.id))
+                                .animation(isDraggingThis ? nil : .spring(response: 0.2, dampingFraction: 0.85),
+                                            value: exerciseDrag?.fromIdx)
+                                .zIndex(isDraggingThis ? 5 : 0)
+                        }
+                        if isReordering {
+                            // Done bar — attached to bottom of card, styled per design
+                            HStack {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.up.arrow.down")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(Color.neonCyan)
+                                    Text("DRAG TO REORDER")
+                                        .font(.mono(11, weight: .bold))
+                                        .foregroundStyle(Color.neonCyan)
+                                        .tracking(0.08)
+                                }
+                                Spacer()
+                                Button {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                        reorderingPlanId = nil
+                                        exerciseDrag = nil
+                                    }
+                                } label: {
+                                    Text("Done")
+                                        .font(.mono(11, weight: .bold))
+                                        .foregroundStyle(Color.neonCyan)
+                                        .padding(.horizontal, 14).padding(.vertical, 7)
+                                        .background(Color.neonCyan.opacity(0.12))
+                                        .overlay(Capsule().stroke(Color.neonCyan.opacity(0.35), lineWidth: 1))
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(Color.neonCyan.opacity(0.06))
+                            .overlay(Rectangle().fill(Color.neonCyan.opacity(0.2)).frame(height: 1), alignment: .top)
+                        }
+                    }
+
+                    // Actions bar
+                    HStack(spacing: 8) {
+                        if isDraft {
+                            Button {
+                                planToPublish = activePlan
+                            } label: {
+                                Label("Publish…", systemImage: "checkmark.circle")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color(hex: "052e10"))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(LinearGradient(colors: [Color.neonGreen, Color(hex: "22c55e")],
+                                                               startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    .clipShape(Capsule())
+                                    .shadow(color: Color.neonGreen.opacity(0.35), radius: 8, y: 4)
+                            }
+                            .buttonStyle(.plain)
+                        } else if let gid = groupId, draft == nil {
+                            Button {
+                                let plan = activePlan
+                                Task {
+                                    if let newGroupId = await store.createDraftPlan(
+                                        groupId: gid,
+                                        traineeId: client.id,
+                                        name: plan.name,
+                                        exercises: plan.exercises,
+                                        clientId: client.id
+                                    ) {
+                                        withAnimation { _ = draftViewGroups.insert(newGroupId) }
+                                    }
+                                }
+                            } label: {
+                                Label("New Draft", systemImage: "pencil")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.neonOrange)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(Color.neonOrange.opacity(0.1))
+                                    .overlay(Capsule().stroke(Color.neonOrange.opacity(0.3), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if isDraft, let draftPlan = draft {
+                            Button {
+                                draftPlanToDelete = draftPlan
+                            } label: {
+                                Label("Delete Draft", systemImage: "trash")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.neonRed)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(Color.neonRed.opacity(0.08))
+                                    .overlay(Capsule().stroke(Color.neonRed.opacity(0.25), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if isDraft {
+                            Button {
+                                targetWorkoutId = activePlan.id
+                                openExerciseForm(nil)
+                            } label: {
+                                Label("Add Exercise", systemImage: "plus")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.white.opacity(0.8))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 9)
+                                    .background(Color.white.opacity(0.06))
+                                    .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Color.black.opacity(0.18))
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(isDraft
+                              ? LinearGradient(colors: [Color.neonOrange.opacity(0.07), Color.white.opacity(0.03)],
+                                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                              : LinearGradient(colors: [Color.white.opacity(0.04), Color.white.opacity(0.04)],
+                                               startPoint: .top, endPoint: .bottom))
+                        .overlay(RoundedRectangle(cornerRadius: 20)
+                            .stroke(isDraft ? Color.neonOrange.opacity(0.35) : Color.neonGreen.opacity(0.22) as Color, lineWidth: 1))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .disabled(isSwiped && !isReordering)
+                .offset(x: isSwiped ? -swipeRevealWidth : 0)
+                .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isSwiped)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 20)
+                        .onChanged { value in
+                            guard !isReordering else { return }
+                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                            planCardDragActive = true
+                            if value.translation.width < -30, !isSwiped { swipedPlanId = activePlan.id }
+                            else if value.translation.width > 30, isSwiped { swipedPlanId = nil }
+                        }
+                        .onEnded { value in
+                            planCardDragActive = false
+                            guard !isReordering else { return }
+                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                swipedPlanId = value.translation.width < -40 ? activePlan.id : nil
+                            }
+                        }
+                )
+                .onTapGesture {
+                    if isSwiped { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { swipedPlanId = nil } }
+                }
+            }
+        } // ZStack
+        } // if let activePlan
+    }
+
+    @ViewBuilder
+    private func planExerciseRow(index i: Int, exercise ex: Exercise, plan: WorkoutPlan, isReordering: Bool = false) -> some View {
+        let linkedVideos = ex.videoIds.compactMap { id in client.videos.first(where: { $0.id == id }) }
+        HStack(spacing: 12) {
+            NumberBadge(number: i + 1)
+
+            Button {
+                guard !isReordering, !planCardDragActive else { return }
+                targetWorkoutId = plan.id
+                openExerciseForm(ex)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(ex.name).font(.body(14, weight: .semibold))
+                            .foregroundStyle(isReordering ? Color.white.opacity(0.6) : .white)
+                        if ex.isHidden {
+                            Image(systemName: "eye.slash")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.neonOrange.opacity(0.7))
+                        }
+                    }
+                    HStack(spacing: 6) {
+                        Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                        if let w = ex.weightLbs, w > 0 {
+                            let wStr = w.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w)
+                            Text("· \(wStr)").font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .allowsHitTesting(!isReordering && !planCardDragActive)
+
+            if !isReordering {
+                if !linkedVideos.isEmpty {
+                    let ready = linkedVideos.filter { !$0.isProcessing }
+                    let anyProcessing = linkedVideos.contains { $0.isProcessing }
+                    if anyProcessing {
+                        ProgressView().tint(Color.neonCyan).scaleEffect(0.75)
+                            .padding(.horizontal, 7).padding(.vertical, 5)
+                    } else if !ready.isEmpty {
+                        Button { galleryVideos = ready; showVideoGallery = true } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: ready.count > 1 ? "play.square.stack.fill" : "play.fill")
+                                    .font(.system(size: ready.count > 1 ? 11 : 9))
+                                if ready.count > 1 { Text("\(ready.count)").font(.mono(9)) }
+                            }
+                            .foregroundStyle(Color.neonCyan)
+                            .padding(.horizontal, 7).padding(.vertical, 5)
+                            .background(Color.neonCyan.opacity(0.12))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if isReordering {
+                // 6-dot grip handle — drag to reorder
+                ExerciseGripHandle()
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                let rowH = ExerciseDragState.rowHeight
+                                let dy = value.translation.height
+                                guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
+                                let count = client.workoutPlans[wi].exercises.count
+
+                                if exerciseDrag == nil {
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    exerciseDrag = ExerciseDragState(planId: plan.id, fromIdx: i, dy: dy, lastSwapY: 0)
+                                } else {
+                                    exerciseDrag!.dy = dy
+                                    // Swap when the finger crosses half a row height past the last swap.
+                                    let delta = dy - exerciseDrag!.lastSwapY
+                                    if abs(delta) >= rowH * 0.6 {
+                                        let dir = delta > 0 ? 1 : -1
+                                        let from = exerciseDrag!.fromIdx
+                                        let target = from + dir
+                                        if target >= 0 && target < count {
+                                            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                                                client.workoutPlans[wi].exercises.swapAt(from, target)
+                                            }
+                                            exerciseDrag!.fromIdx = target
+                                            exerciseDrag!.lastSwapY = dy
+                                            UISelectionFeedbackGenerator().selectionChanged()
+                                        }
+                                    }
+                                }
+                            }
+                            .onEnded { _ in
+                                guard exerciseDrag?.planId == plan.id,
+                                      let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else {
+                                    exerciseDrag = nil; return
+                                }
+                                // Array is already in the right order — just clear drag state and save.
+                                exerciseDrag = nil
+                                let updated = client.workoutPlans[wi]
+                                Task {
+                                    if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
+                                        _ = draftViewGroups.insert(gid)
+                                    }
+                                }
+                            }
+                    )
+            } else {
+                Button { exerciseRecordTarget = (workoutId: plan.id, exerciseId: ex.id) } label: {
+                    Image(systemName: "video.fill").font(.system(size: 10))
+                        .foregroundStyle(Color.neonPink)
+                        .padding(.horizontal, 7).padding(.vertical, 5)
+                        .background(Color.neonPink.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i
+                    ? Color.neonCyan.opacity(0.08) : Color.white.opacity(0.03))
+        .overlay(RoundedRectangle(cornerRadius: exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? 10 : 0)
+            .stroke(exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? Color.neonCyan.opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1))
+        .shadow(color: exerciseDrag?.planId == plan.id && exerciseDrag?.fromIdx == i ? Color.black.opacity(0.45) : .clear, radius: 12, y: 6)
+        .swipeActions(edge: .trailing, allowsFullSwipe: !isReordering) {
+            if !isReordering {
+            Button(role: .destructive) {
+                guard let wi = client.workoutPlans.firstIndex(where: { $0.id == plan.id }) else { return }
+                client.workoutPlans[wi].exercises.removeAll { $0.id == ex.id }
+                let updated = client.workoutPlans[wi]
+                Task {
+                    if let gid = await store.updateWorkoutPlan(planId: plan.id, clientId: client.id, name: updated.name, exercises: updated.exercises) {
+                        _ = draftViewGroups.insert(gid)
+                    }
+                }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            } // !isReordering
+        }
+    }
+
+    @ViewBuilder
+    private func publishConfirmSheet(plan: WorkoutPlan) -> some View {
+        DarkSheet(title: "Publish this draft?", detents: [.medium]) {
+            VStack(spacing: 16) {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Plan").font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                        Spacer()
+                        Text(plan.name).font(.body(13, weight: .semibold)).foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider().background(Color.white.opacity(0.06))
+                    HStack {
+                        Text("Exercises").font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                        Spacer()
+                        Text("\(plan.exercises.count)").font(.body(13, weight: .semibold)).foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider().background(Color.white.opacity(0.06))
+                    HStack {
+                        Text("Status change").font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Text("Draft").font(.mono(11, weight: .bold)).foregroundStyle(Color.neonOrange)
+                            Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.4))
+                            Text("Published").font(.mono(11, weight: .bold)).foregroundStyle(Color.neonGreen)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                }
+                .background(Color.black.opacity(0.25))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 20)
+
+                Text("Publishing will make this the active plan for the client.")
+                    .font(.body(13))
+                    .foregroundStyle(Color.white.opacity(0.45))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+
+                HStack(spacing: 10) {
+                    PillButton(title: "Keep as Draft", style: .secondary, fullWidth: true) {
+                        planToPublish = nil
+                    }
+                    Button {
+                        let p = plan
+                        planToPublish = nil
+                        Task {
+                            // groupId may be nil if this plan pre-dates versioning; try a
+                            // fresh reload to pick it up, then retry.
+                            var groupId = p.groupId
+                            if groupId == nil {
+                                await store.loadClientDetail(client.id)
+                                groupId = client.workoutPlans
+                                    .first(where: { $0.id == p.id })?.groupId
+                            }
+                            guard let gid = groupId else {
+                                store.error = .serverError(400)
+                                return
+                            }
+                            let ok = await store.publishWorkoutPlan(groupId: gid, plan: p, clientId: client.id)
+                            if ok {
+                                withAnimation { _ = draftViewGroups.remove(gid) }
+                            }
+                        }
+                    } label: {
+                        Text("Publish Now")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(hex: "052e10"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(LinearGradient(colors: [Color.neonGreen, Color(hex: "22c55e")],
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .clipShape(Capsule())
+                            .shadow(color: Color.neonGreen.opacity(0.4), radius: 8, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20).padding(.bottom, 16)
+            }
+        }
     }
 
     // MARK: - Videos Tab
@@ -505,8 +1082,10 @@ struct ClientDetailView: View {
         editExSets = exercise.map { "\($0.sets)" } ?? "3"
         editExReps = exercise?.reps.map(String.init) ?? "10"
         editExDuration = exercise?.durationSeconds.map(String.init) ?? "30"
+        editExWeight = exercise?.weightLbs.map { $0.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int($0))" : String(format: "%.1f", $0) } ?? ""
         editExNotes = exercise?.comment ?? ""
         editExVideoIds = Set(exercise?.videoIds ?? [])
+        editExIsHidden = exercise?.isHidden ?? false
         showEditExercise = true
     }
 
@@ -527,8 +1106,10 @@ struct ClientDetailView: View {
             sets: Int(editExSets) ?? 3,
             reps: editExType == .reps ? (Int(editExReps) ?? 10) : nil,
             durationSeconds: editExType == .duration ? (Int(editExDuration) ?? 30) : nil,
+            weightLbs: Double(editExWeight.trimmingCharacters(in: .whitespaces)),
             comment: editExNotes,
-            videoIds: Array(confirmedVideoIds)
+            videoIds: Array(confirmedVideoIds),
+            isHidden: editExIsHidden
         )
 
         if let editingId = editingExercise?.id,
@@ -539,15 +1120,17 @@ struct ClientDetailView: View {
         }
 
         let workout = client.workoutPlans[wi]
+        showEditExercise = false
         Task {
-            await store.updateWorkoutPlan(
+            if let groupId = await store.updateWorkoutPlan(
                 planId: workoutId,
                 clientId: client.id,
                 name: workout.name,
                 exercises: workout.exercises
-            )
+            ) {
+                _ = draftViewGroups.insert(groupId)
+            }
         }
-        showEditExercise = false
     }
 
     private var editExerciseSheet: some View {
@@ -581,7 +1164,28 @@ struct ClientDetailView: View {
                             FormField(label: "Duration (seconds)", text: $editExDuration, placeholder: "30", keyboardType: .numberPad)
                         }
 
+                        FormField(label: "Weight (lbs)", text: $editExWeight, placeholder: "Optional", keyboardType: .decimalPad)
+
                         FormField(label: "Notes", text: $editExNotes, placeholder: "Optional notes")
+
+                        // Hidden toggle
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("HIDDEN FROM CLIENT")
+                                    .font(.mono(11, weight: .bold))
+                                    .foregroundStyle(Color.white.opacity(0.4))
+                                    .textCase(.uppercase)
+                                    .tracking(0.8)
+                                Text("Client won't see this exercise in their view")
+                                    .font(.body(11))
+                                    .foregroundStyle(Color.white.opacity(0.25))
+                            }
+                            Spacer()
+                            Toggle("", isOn: $editExIsHidden)
+                                .tint(Color.neonOrange)
+                                .labelsHidden()
+                        }
+                        .padding(.horizontal, 20)
 
                         // Video picker
                         VStack(alignment: .leading, spacing: 8) {
@@ -771,6 +1375,7 @@ struct ClientDetailView: View {
                         .padding(.bottom, 8)
                     }
                     .scrollDismissesKeyboard(.interactively)
+                    .onTapGesture { isChatFocused = false }
                     .onChange(of: chatMessages.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("chatBottom") }
                     }
@@ -825,7 +1430,28 @@ struct ClientDetailView: View {
         }
     }
 
-    // TODO: replace with WebSocket subscription once the server supports it
+    private func pollChatSilently() async {
+        guard let id = chatId else { return }
+        do {
+            let msgs = try await APIClient.shared.fetchChatMessages(chatId: id)
+            let incoming = msgs.map { m in
+                ChatMessageItem(
+                    id: m.id,
+                    senderId: m.senderId,
+                    senderName: m.sender.name,
+                    text: m.content.text,
+                    createdAt: m.createdAt,
+                    isFromClient: m.senderId == client.id
+                )
+            }
+            let knownIds = Set(chatMessages.map(\.id))
+            let newMsgs = incoming.filter { !knownIds.contains($0.id) }
+            if !newMsgs.isEmpty { chatMessages.append(contentsOf: newMsgs) }
+        } catch {
+            // Silent failure — polling errors don't surface to the user
+        }
+    }
+
     private func refreshChat() async {
         guard !isChatRefreshing else { return }
         let start = Date()
@@ -840,7 +1466,6 @@ struct ClientDetailView: View {
     }
 
     private func loadChat() async {
-        guard store.currentUser != nil else { return }
         isChatLoading = true
         defer { isChatLoading = false }
         do {
@@ -1048,156 +1673,6 @@ struct ChatBubbleView: View {
     }
 }
 
-// MARK: - WorkoutPlanCard
-
-struct WorkoutPlanCard: View {
-    let workout: WorkoutPlan
-    let videos: [ClientVideo]
-    let onAddExercise: () -> Void
-    let onEditExercise: (Exercise) -> Void
-    let onRename: (String) -> Void
-    let onPlayVideos: ([ClientVideo]) -> Void
-    let onRecordForExercise: (Exercise) -> Void
-
-    @State private var showRenameSheet = false
-    @State private var renameText = ""
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Plan header
-            HStack {
-                Image(systemName: "dumbbell.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.neonPink)
-                Text(workout.name)
-                    .font(.body(14, weight: .bold))
-                    .foregroundStyle(.white)
-                Button {
-                    renameText = workout.name
-                    showRenameSheet = true
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.white.opacity(0.35))
-                        .padding(6)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                Spacer()
-                TagChip(label: "\(workout.exercises.count) exercises")
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(Color.neonPink.opacity(0.08))
-            .overlay(
-                UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 0,
-                                       bottomTrailingRadius: 0, topTrailingRadius: 14)
-                    .stroke(Color.neonPink.opacity(0.15), lineWidth: 1)
-            )
-
-            // Exercises
-            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
-                let linkedVideos = ex.videoIds.compactMap { id in videos.first(where: { $0.id == id }) }
-                let isLast = i == workout.exercises.count - 1
-                HStack(spacing: 12) {
-                    NumberBadge(number: i + 1)
-
-                    Button { onEditExercise(ex) } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
-                            Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
-                        }
-                    }
-                    .buttonStyle(.plain)
-
-                    Spacer()
-
-                    if !linkedVideos.isEmpty {
-                        let anyProcessing = linkedVideos.contains { $0.isProcessing }
-                        let readyVideos = linkedVideos.filter { !$0.isProcessing }
-                        if anyProcessing {
-                            ProgressView()
-                                .tint(Color.neonCyan)
-                                .scaleEffect(0.75)
-                                .padding(.horizontal, 7).padding(.vertical, 5)
-                                .background(Color.neonCyan.opacity(0.08))
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                        } else if !readyVideos.isEmpty {
-                            Button { onPlayVideos(readyVideos) } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: readyVideos.count > 1 ? "play.square.stack.fill" : "play.fill")
-                                        .font(.system(size: readyVideos.count > 1 ? 11 : 9))
-                                    if readyVideos.count > 1 {
-                                        Text("\(readyVideos.count)").font(.mono(9))
-                                    }
-                                }
-                                .foregroundStyle(Color.neonCyan)
-                                .padding(.horizontal, 7).padding(.vertical, 5)
-                                .background(Color.neonCyan.opacity(0.12))
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonCyan.opacity(0.25), lineWidth: 1))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
-                    Button { onRecordForExercise(ex) } label: {
-                        Image(systemName: "video.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.neonPink)
-                            .padding(.horizontal, 7).padding(.vertical, 5)
-                            .background(Color.neonPink.opacity(0.12))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.neonPink.opacity(0.25), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 14).padding(.vertical, 12)
-                .background(Color.white.opacity(0.04))
-                .overlay(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 0,
-                        bottomLeadingRadius: isLast ? 14 : 0,
-                        bottomTrailingRadius: isLast ? 14 : 0,
-                        topTrailingRadius: 0
-                    )
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-            }
-
-            // Add exercise
-            Button(action: onAddExercise) {
-                Text("+ Add Exercise")
-                    .font(.mono(11))
-                    .foregroundStyle(Color.neonCyan)
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .sheet(isPresented: $showRenameSheet) {
-            DarkSheet(title: "Rename Plan") {
-                VStack(spacing: 16) {
-                    FormField(label: "Plan Name", text: $renameText, placeholder: "e.g. Upper Body A", clearable: true)
-                    HStack(spacing: 10) {
-                        PillButton(title: "Cancel", style: .secondary, fullWidth: true) {
-                            showRenameSheet = false
-                        }
-                        PillButton(title: "Save", style: .primary, fullWidth: true) {
-                            let name = renameText.trimmingCharacters(in: .whitespaces)
-                            guard !name.isEmpty else { return }
-                            showRenameSheet = false
-                            onRename(name)
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                }
-            }
-        }
-    }
-}
 
 // MARK: - VideoThumb
 
@@ -1540,122 +2015,359 @@ struct VideoPickerRow: View {
 
 struct WorkoutSessionCard: View {
     let workout: Workout
+    var onTagsUpdated: (([WorkoutTag]) -> Void)? = nil
+    var onSessionQualityChanged: ((Int) -> Void)? = nil
+
+    @State private var showTagsSheet = false
+    @State private var availableTags: [WorkoutTag] = []
+    @State private var selectedTagIds: Set<String> = []
+    @State private var isLoadingTags = false
+    @State private var isExpanded = true
 
     private var dateString: String {
         guard let d = workout.occurredAt else { return "Unknown date" }
         return d.formatted(.dateTime.month(.abbreviated).day().year())
     }
 
+    private var durationString: String {
+        guard let s = workout.durationSeconds, s > 0 else { return "" }
+        let h = s / 3600; let m = (s % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    }
+
+    private func statColor(_ value: Int, inverted: Bool = false) -> Color {
+        let hi = inverted ? value <= 3 : value >= 8
+        let lo = inverted ? value >= 8 : value <= 3
+        if hi { return .neonGreen }
+        if lo { return .neonRed }
+        return Color(hex: "fbbf24")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Image(systemName: "figure.run")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.neonCyan)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(workout.name)
-                        .font(.body(14, weight: .bold))
-                        .foregroundStyle(.white)
+            // ── Session Header ──
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(workout.name.uppercased())
+                        .font(.mono(10, weight: .bold))
+                        .foregroundStyle(Color.neonCyan)
+                        .tracking(0.1)
                     Text(dateString)
-                        .font(.mono(10))
-                        .foregroundStyle(Color.white.opacity(0.4))
+                        .font(.display(20))
+                        .foregroundStyle(.white)
+                    HStack(spacing: 6) {
+                        if !durationString.isEmpty {
+                            Text(durationString)
+                                .font(.mono(10.5))
+                                .foregroundStyle(Color.white.opacity(0.45))
+                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                        }
+                        Text("\(workout.exercises.count) exercises")
+                            .font(.mono(10.5))
+                            .foregroundStyle(Color.white.opacity(0.45))
+                        if let pct = workout.adherencePercent, pct > 0 {
+                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                            Text(String(format: "%.0f%% adherence", pct))
+                                .font(.mono(10.5))
+                                .foregroundStyle(Color.white.opacity(0.45))
+                        }
+                    }
                 }
                 Spacer()
-                TagChip(label: "\(workout.exercises.count) exercises")
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(Color.neonCyan.opacity(0.06))
-            .overlay(
-                UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: workout.exercises.isEmpty ? 14 : 0,
-                                       bottomTrailingRadius: workout.exercises.isEmpty ? 14 : 0, topTrailingRadius: 14)
-                    .stroke(Color.neonCyan.opacity(0.15), lineWidth: 1)
-            )
-
-            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
-                let isLast = i == workout.exercises.count - 1 && (workout.comment?.isEmpty != false)
-                VStack(spacing: 0) {
-                    // Exercise header row
-                    HStack(spacing: 12) {
-                        NumberBadge(number: i + 1, color: .neonCyan)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(ex.name).font(.body(14, weight: .semibold)).foregroundStyle(.white)
-                            Text(ex.displaySets).font(.mono(11)).foregroundStyle(Color.white.opacity(0.4))
+                // Trainer / client rating
+                if let rating = workout.sessionQuality ?? workout.traineeRating {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 1) {
+                            Text("\(rating)").font(.display(28)).foregroundStyle(.white)
+                            Text("/10").font(.body(14, weight: .semibold)).foregroundStyle(Color.white.opacity(0.35))
                         }
-                        Spacer()
+                        .lineLimit(1)
+                        Text("QUALITY").font(.mono(9, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.4))
+                            .tracking(0.1)
                     }
-                    .padding(.horizontal, 14).padding(.vertical, 12)
+                }
+            }
+            .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 12)
+            .background(Color.neonCyan.opacity(0.04))
 
-                    // Per-set rows
-                    if !ex.setsData.isEmpty {
-                        VStack(spacing: 0) {
-                            ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
-                                let isDur = s.durationSeconds != nil
-                                HStack(spacing: 0) {
-                                    Text("SET \(j + 1)")
-                                        .font(.mono(10))
-                                        .foregroundStyle(Color.white.opacity(0.35))
-                                        .frame(width: 52, alignment: .leading)
-                                    HStack(spacing: 2) {
-                                        Text(isDur ? "\(s.durationSeconds ?? 0)" : "\(s.reps ?? 0)")
-                                            .font(.mono(12, weight: .semibold))
-                                            .foregroundStyle(s.completed ? .white : Color.white.opacity(0.35))
-                                        Text(isDur ? "SEC" : "REPS")
-                                            .font(.mono(9))
-                                            .foregroundStyle(Color.white.opacity(0.3))
-                                    }
-                                    Spacer()
-                                    if let w = s.weightLbs, w > 0 {
-                                        Text(w.truncatingRemainder(dividingBy: 1) == 0
-                                             ? "\(Int(w)) lbs"
-                                             : String(format: "%.1f lbs", w))
-                                            .font(.mono(11))
-                                            .foregroundStyle(Color.white.opacity(0.45))
-                                    } else {
-                                        Text("—")
-                                            .font(.mono(11))
-                                            .foregroundStyle(Color.white.opacity(0.2))
-                                    }
-                                    Image(systemName: s.completed ? "checkmark" : "xmark")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundStyle(s.completed ? Color.neonGreen : Color.neonRed.opacity(0.7))
-                                        .frame(width: 24, alignment: .trailing)
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(Color.white.opacity(j % 2 == 0 ? 0.02 : 0.0))
+            if isExpanded {
+                // ── Pre-session Stats ──
+                let hasPreStats = workout.preSessionEnergy != nil || workout.preSessionSoreness != nil || workout.preSessionStress != nil
+                if hasPreStats {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color.neonCyan).frame(width: 5, height: 5)
+                            Text("PRE-SESSION").font(.mono(10, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
+                        }
+                        HStack(spacing: 8) {
+                            if let e = workout.preSessionEnergy {
+                                SessionStatBox(label: "Energy", value: e, color: statColor(e))
+                            }
+                            if let s = workout.preSessionSoreness {
+                                SessionStatBox(label: "Soreness", value: s, color: statColor(s, inverted: true))
+                            }
+                            if let s = workout.preSessionStress {
+                                SessionStatBox(label: "Stress", value: s, color: statColor(s, inverted: true))
                             }
                         }
-                        .padding(.bottom, 4)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+                }
+
+                // ── Post-session Stats ──
+                if let postE = workout.postSessionEnergy {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color.neonPink).frame(width: 5, height: 5)
+                            Text("POST-SESSION").font(.mono(10, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
+                        }
+                        HStack(spacing: 8) {
+                            SessionStatBox(label: "Energy", value: postE, color: statColor(postE))
+                            Spacer()
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+                }
+
+                // ── Exercise + Per-set rows ──
+                if !workout.exercises.isEmpty {
+                    workoutExercisesSection
+                }
+
+                // ── Session Quality Rating ──
+                if onSessionQualityChanged != nil {
+                    sessionQualitySection
+                }
+
+                // ── Tags row ──
+                HStack(spacing: 6) {
+                    Image(systemName: "tag").font(.system(size: 10)).foregroundStyle(Color.white.opacity(0.3))
+                    if workout.tags.isEmpty {
+                        Text("No tags").font(.mono(10)).foregroundStyle(Color.white.opacity(0.2))
+                    } else {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 4) {
+                                ForEach(workout.tags) { tag in
+                                    Text(tag.name).font(.mono(10))
+                                        .foregroundStyle(Color.neonCyan.opacity(0.8))
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Color.neonCyan.opacity(0.08))
+                                        .overlay(Capsule().stroke(Color.neonCyan.opacity(0.20), lineWidth: 1))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                    }
+                    Spacer()
+                    if onTagsUpdated != nil {
+                        Button { selectedTagIds = Set(workout.tags.map(\.id)); showTagsSheet = true } label: {
+                            Text("Edit").font(.mono(10, weight: .semibold)).foregroundStyle(Color.neonCyan)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .background(Color.white.opacity(0.03))
-                .overlay(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 0,
-                        bottomLeadingRadius: isLast ? 14 : 0,
-                        bottomTrailingRadius: isLast ? 14 : 0,
-                        topTrailingRadius: 0
-                    )
-                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
-                )
-            }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
 
-            if let comment = workout.comment, !comment.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "text.bubble").font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.3))
-                    Text(comment).font(.body(12)).foregroundStyle(Color.white.opacity(0.5))
-                    Spacer()
+                // ── Comment ──
+                if let comment = workout.comment, !comment.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.bubble").font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.3))
+                        Text(comment).font(.body(12)).foregroundStyle(Color.white.opacity(0.5))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
                 }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Color.white.opacity(0.02))
-                .overlay(
-                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 14,
-                                           bottomTrailingRadius: 14, topTrailingRadius: 0)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                )
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .background(Color.white.opacity(0.04))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.09), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .sheet(isPresented: $showTagsSheet) { tagsSheet }
+    }
+
+    private var sessionQualitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("SESSION QUALITY").font(.mono(10, weight: .bold))
+                .foregroundStyle(Color.white.opacity(0.4)).tracking(0.1)
+            HStack(spacing: 4) {
+                ForEach(1...10, id: \.self) { n in
+                    ratingButton(n)
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+    }
+
+    @ViewBuilder
+    private func ratingButton(_ n: Int) -> some View {
+        let selected = workout.sessionQuality == n
+        let inRange = (workout.sessionQuality ?? 0) >= n
+        let fg: Color = selected ? Color(hex: "1a0010") : (inRange ? Color.neonPink.opacity(0.55) : Color.white.opacity(0.5))
+        let bg: LinearGradient = selected
+            ? LinearGradient(colors: [Color.neonPink, Color(hex: "e855a0")], startPoint: .topLeading, endPoint: .bottomTrailing)
+            : (inRange
+               ? LinearGradient(colors: [Color.neonPink.opacity(0.08), Color.neonPink.opacity(0.08)], startPoint: .top, endPoint: .bottom)
+               : LinearGradient(colors: [Color.white.opacity(0.03), Color.white.opacity(0.03)], startPoint: .top, endPoint: .bottom))
+        let strokeColor: Color = selected ? .clear : (inRange ? Color.neonPink.opacity(0.18) : Color.white.opacity(0.1))
+        Button { onSessionQualityChanged?(n) } label: {
+            Text("\(n)")
+                .font(.display(14, weight: .heavy))
+                .foregroundStyle(fg)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .background(bg)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(strokeColor, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .shadow(color: selected ? Color.neonPink.opacity(0.4) : .clear, radius: 6, y: 3)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var workoutExercisesSection: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { i, ex in
+                workoutExerciseBlock(index: i, exercise: ex)
+            }
+        }
+        .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+    }
+
+    @ViewBuilder
+    private func workoutExerciseBlock(index i: Int, exercise ex: Exercise) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                NumberBadge(number: i + 1, color: .neonCyan)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(ex.name).font(.body(13, weight: .semibold)).foregroundStyle(.white)
+                    Text(ex.displaySets).font(.mono(10)).foregroundStyle(Color.white.opacity(0.4))
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            if !ex.setsData.isEmpty {
+                ForEach(Array(ex.setsData.enumerated()), id: \.offset) { j, s in
+                    workoutSetRow(index: j, set: s)
+                }
+            }
+        }
+        .overlay(Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1), alignment: .top)
+    }
+
+    @ViewBuilder
+    private func workoutSetRow(index j: Int, set s: ExerciseSetLog) -> some View {
+        let isDur = s.durationSeconds != nil
+        let count = isDur ? "\(s.durationSeconds ?? 0)" : "\(s.reps ?? 0)"
+        let unit = isDur ? "SEC" : "REPS"
+        let weightStr: String? = s.weightLbs.flatMap { w in
+            w > 0 ? (w.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(w)) lbs" : String(format: "%.1f lbs", w)) : nil
+        }
+        HStack(spacing: 0) {
+            Text("SET \(j + 1)")
+                .font(.mono(10))
+                .foregroundStyle(Color.white.opacity(0.35))
+                .frame(width: 48, alignment: .leading)
+            HStack(spacing: 2) {
+                Text(count)
+                    .font(.mono(12, weight: .semibold))
+                    .foregroundStyle(s.completed ? .white : Color.white.opacity(0.35))
+                Text(unit)
+                    .font(.mono(9))
+                    .foregroundStyle(Color.white.opacity(0.3))
+            }
+            Spacer()
+            Text(weightStr ?? "—")
+                .font(.mono(11))
+                .foregroundStyle(weightStr != nil ? Color.white.opacity(0.45) : Color.white.opacity(0.2))
+            Image(systemName: s.completed ? "checkmark" : "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(s.completed ? Color.neonGreen : Color.neonRed.opacity(0.7))
+                .frame(width: 22, alignment: .trailing)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 7)
+        .background(Color.white.opacity(j % 2 == 0 ? 0.02 : 0.0))
+    }
+
+    @ViewBuilder
+    private func weightCell(_ weight: Double?) -> some View {
+        if let w = weight, w > 0 {
+            let wStr: String = w.truncatingRemainder(dividingBy: 1) == 0
+                ? "\(Int(w)) lbs"
+                : String(format: "%.1f lbs", w)
+            Text(wStr)
+                .font(.mono(12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.75))
+        } else {
+            Text("—")
+                .font(.mono(12))
+                .foregroundStyle(Color.white.opacity(0.2))
+        }
+    }
+
+    private var tagsSheet: some View {
+        DarkSheet(title: "Workout Tags") {
+            VStack(spacing: 0) {
+                if isLoadingTags {
+                    ProgressView().tint(Color.neonCyan).padding(.vertical, 32)
+                } else if availableTags.isEmpty {
+                    Text("No tags available")
+                        .font(.body(13))
+                        .foregroundStyle(Color.white.opacity(0.3))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 32)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(availableTags) { tag in
+                                Button {
+                                    if selectedTagIds.contains(tag.id) { selectedTagIds.remove(tag.id) }
+                                    else { selectedTagIds.insert(tag.id) }
+                                } label: {
+                                    HStack {
+                                        Text(tag.name)
+                                            .font(.body(14))
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        Image(systemName: selectedTagIds.contains(tag.id) ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 18))
+                                            .foregroundStyle(selectedTagIds.contains(tag.id) ? Color.neonCyan : Color.white.opacity(0.25))
+                                    }
+                                    .padding(.horizontal, 20).padding(.vertical, 14)
+                                    .background(selectedTagIds.contains(tag.id) ? Color.neonCyan.opacity(0.06) : Color.clear)
+                                }
+                                .buttonStyle(.plain)
+                                Divider().background(Color.white.opacity(0.06)).padding(.horizontal, 20)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 320)
+                }
+
+                HStack(spacing: 10) {
+                    PillButton(title: "Cancel", style: .secondary, fullWidth: true) { showTagsSheet = false }
+                    PillButton(title: "Save Tags", style: .primary, fullWidth: true) {
+                        let saved = availableTags.filter { selectedTagIds.contains($0.id) }
+                        showTagsSheet = false
+                        onTagsUpdated?(saved)
+                    }
+                }
+                .padding(.horizontal, 20).padding(.bottom, 24).padding(.top, 12)
+            }
+        }
+        .task {
+            guard availableTags.isEmpty else { return }
+            isLoadingTags = true
+            defer { isLoadingTags = false }
+            availableTags = (try? await APIClient.shared.fetchAvailableWorkoutTags())?
+                .map { WorkoutTag(id: $0.id, name: $0.name) } ?? []
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+import FirebaseMessaging
 import Foundation
 import Observation
 import UIKit
@@ -17,6 +18,7 @@ class AppStore {
     var refreshMessage: String? = nil
 
     var uploadTasks: [UploadTask] = []
+    var isShowingRecording = false
 
     var feedVideos: [VideoFeedItem] = []
     var isFeedLoading: Bool = false
@@ -37,6 +39,7 @@ class AppStore {
             currentUser = me
             isAuthenticated = true
             await loadInitialData()
+            await registerFCMToken()
         } catch APIError.unauthorized {
             signOut()
         } catch {
@@ -44,7 +47,21 @@ class AppStore {
         }
     }
 
+    func registerFCMToken() async {
+        await withCheckedContinuation { continuation in
+            Messaging.messaging().token { token, _ in
+                if let token {
+                    Task { await self.api.registerPushToken(token) }
+                }
+                continuation.resume()
+            }
+        }
+    }
+
     func signOut() {
+        if let fcmToken = Messaging.messaging().fcmToken {
+            Task { await api.deletePushToken(fcmToken) }
+        }
         KeychainStore.delete()
         WKWebsiteDataStore.default().removeData(
             ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
@@ -121,34 +138,36 @@ class AppStore {
         }
         guard let idx = clients.firstIndex(where: { $0.id == clientId }) else { return }
 
+        // Plans — sourced from the trainee detail which includes exercises + videos inline.
+        // The detail returns non-archived plans (draft + published), so both states show up.
         clients[idx].workoutPlans = (detail.workoutPlans ?? []).map { plan in
-            WorkoutPlan(
+            let exs = (plan.exercises ?? []).map { mapExerciseDetail($0) }
+            return WorkoutPlan(
                 id: plan.id,
+                groupId: plan.workoutPlanGroupId,
                 name: plan.name,
-                exercises: (plan.exercises ?? []).map { ex in
-                    Exercise(
-                        id: ex.id,
-                        serverId: ex.id,
-                        name: ex.name,
-                        exerciseType: ex.type == "duration" ? .duration : .reps,
-                        sets: ex.sets ?? 1,
-                        reps: ex.reps,
-                        durationSeconds: ex.durationSeconds,
-                        comment: ex.comment ?? "",
-                        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id }
-                    )
-                }
+                versionStatus: plan.versionStatus ?? "draft",
+                versionNumber: plan.versionNumber ?? 1,
+                occurredAt: plan.occurredAt,
+                exercises: exs
             )
         }
 
+        // Workouts — sets_data JSONB is gone; sets are now in workout.sets keyed by exerciseId.
         clients[idx].workouts = (detail.workouts ?? []).map { w in
-            Workout(
+            let setsByExercise: [String: [WorkoutSetResponse]] = Dictionary(
+                grouping: w.sets ?? [],
+                by: \.exerciseId
+            )
+            return Workout(
                 id: w.id,
                 name: w.workoutPlan?.name ?? "Workout",
                 occurredAt: w.workoutPlan?.occurredAt,
                 comment: w.comment,
                 exercises: (w.exerciseLinks ?? []).map { link in
                     let ex = link.exercise
+                    let sets = (setsByExercise[ex?.id ?? link.exerciseId] ?? [])
+                        .sorted { $0.position < $1.position }
                     return Exercise(
                         id: ex?.id ?? link.exerciseId,
                         name: ex?.name ?? "Exercise",
@@ -158,12 +177,22 @@ class AppStore {
                         durationSeconds: ex?.durationSeconds,
                         comment: "",
                         videoIds: [],
-                        setsData: (link.setsData ?? []).map {
+                        setsData: sets.map {
                             ExerciseSetLog(reps: $0.reps, durationSeconds: $0.durationSeconds,
-                                           weightLbs: $0.weightLbs, completed: $0.completed ?? false)
+                                           weightLbs: $0.weightLbs, completed: $0.completed)
                         }
                     )
-                }
+                },
+                tags: (w.workoutTags ?? []).map { WorkoutTag(id: $0.tag.id, name: $0.tag.name) },
+                durationSeconds: w.durationSeconds,
+                preSessionEnergy: w.preSessionEnergy,
+                preSessionSoreness: w.preSessionSoreness,
+                preSessionStress: w.preSessionStress,
+                postSessionEnergy: w.postSessionEnergy,
+                sessionQuality: w.sessionQuality,
+                traineeRating: w.traineeRating,
+                totalVolumeLbs: w.totalVolumeLbs,
+                adherencePercent: w.adherencePercent
             )
         }
 
@@ -179,7 +208,7 @@ class AppStore {
                                isProcessing: v.status.map { $0 != "ready" } ?? false)
         }
 
-        let linkedVideos: [ClientVideo] = (detail.workoutPlans ?? []).flatMap { plan in
+        let planLinkedVideos: [ClientVideo] = (detail.workoutPlans ?? []).flatMap { plan in
             let planVideos = (plan.videoLinks ?? []).compactMap { link -> ClientVideo? in
                 guard let v = link.video else { return nil }
                 return ClientVideo(id: v.id, title: v.title ?? plan.name,
@@ -210,10 +239,10 @@ class AppStore {
         }
 
         let serverIds = Set(directVideos.map(\.id))
-            .union(linkedVideos.map(\.id))
+            .union(planLinkedVideos.map(\.id))
             .union(workoutLinkedVideos.map(\.id))
         let localOnly = clients[idx].videos.filter { !serverIds.contains($0.id) }
-        let combined = directVideos + linkedVideos + workoutLinkedVideos + localOnly
+        let combined = directVideos + planLinkedVideos + workoutLinkedVideos + localOnly
         var seen = Set<String>()
         clients[idx].videos = combined.filter { seen.insert($0.id).inserted }
         if showRefreshToast { refreshMessage = "Client data refreshed" }
@@ -272,17 +301,61 @@ class AppStore {
         }
     }
 
+    /// Soft-deletes an entire workout plan group (and its non-published plans).
+    /// Returns false and sets self.error if the server rejects (e.g. published plan exists).
+    @discardableResult
+    func deleteWorkoutPlanGroup(groupId: String, clientId: String) async -> Bool {
+        do {
+            try await api.deleteWorkoutPlanGroup(id: groupId)
+            if let cidx = clients.firstIndex(where: { $0.id == clientId }) {
+                clients[cidx].workoutPlans.removeAll { $0.groupId == groupId }
+            }
+            return true
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return false
+        }
+    }
+
+    /// Soft-deletes a single draft workout plan.
+    /// Returns false and sets self.error if the server rejects (e.g. plan is published).
+    @discardableResult
+    func deleteWorkoutPlan(planId: String, clientId: String) async -> Bool {
+        do {
+            try await api.deleteWorkoutPlan(id: planId)
+            if let cidx = clients.firstIndex(where: { $0.id == clientId }) {
+                clients[cidx].workoutPlans.removeAll { $0.id == planId }
+            }
+            return true
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return false
+        }
+    }
+
     func createWorkoutPlan(clientId: String, name: String) async {
         do {
             let plan = try await api.createWorkoutPlan(traineeId: clientId, name: name)
             guard let idx = clients.firstIndex(where: { $0.id == clientId }) else { return }
-            clients[idx].workoutPlans.append(WorkoutPlan(id: plan.id, name: plan.name, exercises: []))
+            clients[idx].workoutPlans.append(WorkoutPlan(
+                id: plan.id,
+                groupId: plan.workoutPlanGroupId,
+                name: plan.name,
+                versionStatus: plan.versionStatus ?? "draft",
+                versionNumber: plan.versionNumber ?? 1,
+                exercises: []
+            ))
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
         }
     }
 
-    func updateWorkoutPlan(planId: String, clientId: String, name: String, exercises: [Exercise]) async {
+    /// PATCHes a workout plan. The backend handles forking automatically:
+    /// - draft → updates in place, returns same ID
+    /// - published → forks a new draft, returns new ID with versionStatus "draft"
+    /// Returns the groupId when a fork occurred so the UI can switch to draft view.
+    @discardableResult
+    func updateWorkoutPlan(planId: String, clientId: String, name: String, exercises: [Exercise]) async -> String? {
         let payload = exercises.map { ex in
             ExercisePayload(
                 id: ex.serverId,
@@ -291,12 +364,105 @@ class AppStore {
                 sets: ex.sets,
                 reps: ex.exerciseType == .reps ? ex.reps : nil,
                 durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
+                weightLbs: ex.weightLbs,
                 comment: ex.comment.isEmpty ? nil : ex.comment,
-                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds
+                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds,
+                isHidden: ex.isHidden
             )
         }
         do {
-            _ = try await api.updateWorkoutPlan(id: planId, name: name, exercises: payload)
+            let updated = try await api.updateWorkoutPlan(id: planId, name: name, exercises: payload)
+            let forked = updated.id != planId
+            if forked {
+                // Backend forked a new draft from a published plan; reload to reflect server state.
+                await loadClientDetail(clientId)
+                return updated.workoutPlanGroupId
+            }
+            // Backfill groupId on the local plan in case it was nil (first PATCH after creation).
+            if let gid = updated.workoutPlanGroupId,
+               let cidx = clients.firstIndex(where: { $0.id == clientId }),
+               let widx = clients[cidx].workoutPlans.firstIndex(where: { $0.id == planId }),
+               clients[cidx].workoutPlans[widx].groupId == nil {
+                clients[cidx].workoutPlans[widx].groupId = gid
+            }
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+        }
+        return nil
+    }
+
+    @discardableResult
+    func publishWorkoutPlan(groupId: String, plan: WorkoutPlan, clientId: String) async -> Bool {
+        let payload = plan.exercises.map { ex in
+            ExercisePayload(
+                id: ex.serverId,
+                name: ex.name,
+                type: ex.exerciseType.rawValue,
+                sets: ex.sets,
+                reps: ex.exerciseType == .reps ? ex.reps : nil,
+                durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
+                weightLbs: ex.weightLbs,
+                comment: ex.comment.isEmpty ? nil : ex.comment,
+                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds,
+                isHidden: ex.isHidden
+            )
+        }
+        do {
+            _ = try await api.publishWorkoutPlan(groupId: groupId, name: plan.name, exercises: payload)
+            await loadClientDetail(clientId)
+            refreshMessage = "\(plan.name) published"
+            return true
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func createDraftPlan(groupId: String, traineeId: String, name: String,
+                         exercises: [Exercise] = [], clientId: String) async -> String? {
+        let payload = exercises.map { ex in
+            // Strip server IDs — the backend inserts fresh exercise rows for the new draft.
+            ExercisePayload(
+                id: nil,
+                name: ex.name,
+                type: ex.exerciseType.rawValue,
+                sets: ex.sets,
+                reps: ex.exerciseType == .reps ? ex.reps : nil,
+                durationSeconds: ex.exerciseType == .duration ? ex.durationSeconds : nil,
+                weightLbs: ex.weightLbs,
+                comment: ex.comment.isEmpty ? nil : ex.comment,
+                videoIds: ex.videoIds.isEmpty ? nil : ex.videoIds,
+                isHidden: ex.isHidden
+            )
+        }
+        do {
+            let plan = try await api.createDraftInGroup(
+                groupId: groupId, traineeId: traineeId, name: name, exercises: payload
+            )
+            // Reload so the new draft (with its server-assigned exercise IDs) shows correctly.
+            await loadClientDetail(clientId)
+            return plan.workoutPlanGroupId ?? groupId
+        } catch {
+            self.error = (error as? APIError) ?? .networkError(error)
+            return nil
+        }
+    }
+
+    func updateSessionQuality(clientId: String, workoutId: String, sessionQuality: Int) {
+        guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
+              let widx = clients[cidx].workouts.firstIndex(where: { $0.id == workoutId })
+        else { return }
+        clients[cidx].workouts[widx].sessionQuality = sessionQuality
+    }
+
+    func setWorkoutTags(clientId: String, workoutId: String, tags: [WorkoutTag]) async {
+        do {
+            try await api.setWorkoutTags(workoutId: workoutId, tagIds: tags.map(\.id))
+            guard let cidx = clients.firstIndex(where: { $0.id == clientId }),
+                  let widx = clients[cidx].workouts.firstIndex(where: { $0.id == workoutId })
+            else { return }
+            clients[cidx].workouts[widx].tags = tags
         } catch {
             self.error = (error as? APIError) ?? .networkError(error)
         }
@@ -403,6 +569,22 @@ class AppStore {
 }
 
 // MARK: - API → Model conversions
+
+private func mapExerciseDetail(_ ex: ExerciseDetailResponse) -> Exercise {
+    Exercise(
+        id: ex.id,
+        serverId: ex.id,
+        name: ex.name,
+        exerciseType: ex.type == "duration" ? .duration : .reps,
+        sets: ex.sets ?? 1,
+        reps: ex.reps,
+        durationSeconds: ex.durationSeconds,
+        weightLbs: ex.weightLbs,
+        comment: ex.comment ?? "",
+        videoIds: (ex.videoLinks ?? []).compactMap { $0.video?.id },
+        isHidden: ex.isHidden ?? false
+    )
+}
 
 extension Client {
     init(_ r: TraineeResponse) {

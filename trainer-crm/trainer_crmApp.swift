@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct TrainerCRMApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var store = AppStore()
 
     var body: some Scene {

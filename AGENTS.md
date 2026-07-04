@@ -22,3 +22,32 @@ The ticket **description is the source of truth**. When requirements change mid-
 - Leave a comment explaining what changed and why (for audit trail).
 
 Always check comments on a ticket before starting work — they may contain corrections or updates that supersede the original description.
+
+## Push Notifications (FCM)
+
+The iOS app receives push notifications via Firebase Cloud Messaging (FCM) → APNs when trainers receive new client messages.
+
+### Architecture
+
+- `AppDelegate.swift` — configures Firebase, requests notification permission, receives FCM token via `MessagingDelegate`
+- `AppStore.registerFCMToken()` — explicitly fetches and registers the FCM token on every login (called from `checkAuth()`); do not rely solely on the delegate callback as it doesn't always fire on reinstall
+- `APIClient.registerPushToken()` / `deletePushToken()` — POST/DELETE to `/api/push-tokens` on the backend
+- Token is deleted from the server on `signOut()` so the trainer stops receiving notifications after logout
+
+### Critical gotchas
+
+**Use a universal APNs key, not a topic-specific one.** In Apple Developer Portal, when creating the APNs key, leave topic restrictions empty. Firebase has known delivery failures with "Topic specific" keys even when the bundle ID matches.
+
+**Both the Apple key and Firebase upload must be set to Production.** APNs auth keys have a production/sandbox environment. TestFlight and App Store builds use production APNs — both the key itself and the Firebase upload setting must be Production.
+
+**Do not test FCM delivery from an Xcode debug build.** Debug builds use the APNs sandbox endpoint. FCM will return success but the notification will never arrive on device. Always test via TestFlight.
+
+**`didReceiveRegistrationToken` is unreliable on reinstall.** The delegate callback may not fire when the app is reinstalled or a new build is installed. The explicit `Messaging.messaging().token { }` call in `registerFCMToken()` ensures the token is always current.
+
+### Testing
+
+1. Install the app via TestFlight (not Xcode)
+2. Launch the app — notification permission dialog appears on first launch
+3. Grant permission
+4. Have a client send a message from the PWA
+5. The trainer should receive a banner notification within seconds
