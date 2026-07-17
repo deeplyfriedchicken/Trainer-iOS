@@ -4,213 +4,511 @@ import AVKit
 
 // MARK: - Videos Feed
 
+/// Backing model for a Video Library surface. Search, sort, and grouping are all
+/// resolved server-side (backend ADR 0006); this model just holds the current query
+/// and the server-ordered rows (with per-row group metadata). One instance per mount,
+/// so the global tab and a client-scoped tab stay independent.
+@MainActor
+@Observable
+final class VideoFeedModel {
+    enum SortKey: String { case name, trainee, date }
+    enum SortDir: String { case asc, desc }
+    enum GroupBy: String, Hashable { case none, trainee, month }
+
+    /// nil = global library; non-nil = scoped to a single trainee.
+    let traineeId: String?
+    var search: String = "" { didSet { if oldValue != search { scheduleSearchReload() } } }
+    private(set) var sortKey: SortKey = .date
+    private(set) var sortDir: SortDir = .desc
+    private(set) var groupBy: GroupBy = .month
+
+    private(set) var rows: [VideoFeedItem] = []
+    private(set) var isLoading = false
+    private(set) var hasMore = true
+
+    private let pageSize = 20
+    private let api = APIClient.shared
+    private var searchDebounce: Task<Void, Never>? = nil
+
+    init(traineeId: String?) { self.traineeId = traineeId }
+
+    func setSort(_ key: SortKey) {
+        if sortKey == key {
+            sortDir = sortDir == .asc ? .desc : .asc
+        } else {
+            sortKey = key
+            sortDir = key == .date ? .desc : .asc
+        }
+        Task { await reload() }
+    }
+
+    func setGroupBy(_ g: GroupBy) {
+        guard g != groupBy else { return }
+        groupBy = g
+        Task { await reload() }
+    }
+
+    func loadInitial() async {
+        if rows.isEmpty { await reload() }
+    }
+
+    private func scheduleSearchReload() {
+        searchDebounce?.cancel()
+        searchDebounce = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            if Task.isCancelled { return }
+            await self?.reload()
+        }
+    }
+
+    private func query(offset: Int) async throws -> [VideoFeedItem] {
+        let items = try await api.fetchVideos(
+            limit: pageSize,
+            offset: offset,
+            traineeId: traineeId,
+            search: search.isEmpty ? nil : search,
+            sort: sortKey.rawValue,
+            order: sortDir.rawValue,
+            groupBy: groupBy.rawValue
+        )
+        return items.map(VideoFeedItem.init)
+    }
+
+    func reload() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let items = try await query(offset: 0)
+            rows = items
+            hasMore = items.count == pageSize
+        } catch is CancellationError {
+        } catch {
+            // Keep whatever we have; the surface shows its empty/last-known state.
+        }
+    }
+
+    func loadMore() async {
+        guard !isLoading, hasMore else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let items = try await query(offset: rows.count)
+            rows.append(contentsOf: items)
+            hasMore = items.count == pageSize
+        } catch { }
+    }
+
+    func remove(id: String) { rows.removeAll { $0.id == id } }
+
+    func applyEdit(id: String, title: String, description: String?) {
+        guard let i = rows.firstIndex(where: { $0.id == id }) else { return }
+        rows[i].title = title
+        rows[i].description = description
+    }
+}
+
+// MARK: - Videos View (reusable)
+
+/// The Video Library table. Reused in two mounts: the global Videos tab (`traineeId`
+/// nil) and a trainee's detail (`traineeId` set + `embedded`). The scoped mount drops
+/// the Trainee column and the Trainee group option, and merges local in-flight uploads.
 struct VideosView: View {
     @Environment(AppStore.self) private var store
+
+    var traineeId: String? = nil
+    /// When embedded inside another ScrollView (client detail), render plain content
+    /// and skip the standalone header/own ScrollView.
+    var embedded: Bool = false
+    var searchPlaceholder: String = "Search videos, tags, clients…"
+    /// Scoped mount: locally-tracked recordings (uploading/processing or just-ready)
+    /// that may not be in the server feed yet.
+    var inFlight: [ClientVideo] = []
+    var clientName: String? = nil
+    var onVideoDeleted: ((String) -> Void)? = nil
+    var onVideoRenamed: ((String, String) -> Void)? = nil
+
+    @State private var model: VideoFeedModel
     @State private var selected: VideoFeedItem? = nil
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8),
-    ]
+    init(
+        traineeId: String? = nil,
+        embedded: Bool = false,
+        searchPlaceholder: String = "Search videos, tags, clients…",
+        inFlight: [ClientVideo] = [],
+        clientName: String? = nil,
+        onVideoDeleted: ((String) -> Void)? = nil,
+        onVideoRenamed: ((String, String) -> Void)? = nil
+    ) {
+        self.traineeId = traineeId
+        self.embedded = embedded
+        self.searchPlaceholder = searchPlaceholder
+        self.inFlight = inFlight
+        self.clientName = clientName
+        self.onVideoDeleted = onVideoDeleted
+        self.onVideoRenamed = onVideoRenamed
+        _model = State(initialValue: VideoFeedModel(traineeId: traineeId))
+    }
+
+    private var isGlobal: Bool { traineeId == nil }
+    private var groupOptions: [VideoFeedModel.GroupBy] {
+        isGlobal ? [.none, .trainee, .month] : [.none, .month]
+    }
+    private var showTraineeColumn: Bool { isGlobal && model.groupBy != .trainee }
+
+    /// In-flight recordings not yet present in the server feed (dedupe by id).
+    private var pendingInFlight: [ClientVideo] {
+        inFlight.filter { cv in !model.rows.contains { $0.id == cv.id } }
+    }
+    private var inFlightToken: [String] { inFlight.map { "\($0.id):\($0.isProcessing)" } }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Videos")
-                        .font(.display(28))
-                        .foregroundStyle(.white)
-                    Text("\(store.feedVideos.count) recordings")
-                        .font(.mono(12))
-                        .foregroundStyle(Color.white.opacity(0.4))
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 8)
-            .padding(.bottom, 12)
-
-            if store.isFeedLoading && store.feedVideos.isEmpty {
-                Spacer()
-                ProgressView().tint(Color.neonCyan).scaleEffect(1.3)
-                Spacer()
-            } else if store.feedVideos.isEmpty {
-                emptyState
+        Group {
+            if embedded {
+                content
             } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 8) {
-                        ForEach(store.feedVideos) { item in
-                            VideoFeedCell(item: item)
-                                .onTapGesture { selected = item }
-                                .onAppear {
-                                    if item.id == store.feedVideos.last?.id {
-                                        Task { await store.loadMoreFeedVideos() }
-                                    }
-                                }
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 16)
-                    if store.isFeedLoading {
+                ScrollView { content }
+                    .refreshable { await model.reload() }
+            }
+        }
+        .task { await model.loadInitial() }
+        .onChange(of: inFlightToken) { _, _ in
+            Task { await model.reload() }
+        }
+        .sheet(item: $selected) { item in
+            VideoDetailSheet(
+                item: item,
+                onDelete: {
+                    model.remove(id: item.id)
+                    onVideoDeleted?(item.id)
+                    await store.deleteVideo(id: item.id, clientId: traineeId)
+                },
+                onSaved: { title, desc in
+                    model.applyEdit(id: item.id, title: title, description: desc)
+                    onVideoRenamed?(item.id, title)
+                }
+            )
+            .environment(store)
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        VStack(spacing: 0) {
+            if !embedded { header }
+            searchBar
+            groupControl
+
+            if model.rows.isEmpty && pendingInFlight.isEmpty {
+                if model.isLoading {
+                    ProgressView().tint(Color.neonCyan).scaleEffect(1.2)
+                        .padding(.vertical, 60)
+                } else {
+                    emptyState
+                }
+            } else {
+                LazyVStack(spacing: 0) {
+                    inFlightRows
+                    tableHeader
+                    feedRows
+                    if model.isLoading && !model.rows.isEmpty {
                         ProgressView().tint(Color.neonCyan).padding(.vertical, 16)
                     }
                 }
-                .refreshable { await Task { await store.loadFeedVideos() }.value }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 16)
             }
         }
-        .task {
-            if store.feedVideos.isEmpty {
-                await store.loadFeedVideos()
+    }
+
+    // MARK: Header / search / group
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Videos").font(.display(28)).foregroundStyle(.white)
+                Text(model.hasMore ? "\(model.rows.count)+ recordings" : "\(model.rows.count) recordings")
+                    .font(.mono(12)).foregroundStyle(Color.white.opacity(0.4))
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15)).foregroundStyle(Color.white.opacity(0.3))
+            TextField(searchPlaceholder,
+                      text: Binding(get: { model.search }, set: { model.search = $0 }))
+                .font(.body(14)).foregroundStyle(.white).tint(Color.neonPink)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color.white.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.1), lineWidth: 1))
+        .padding(.horizontal, 16).padding(.bottom, 10)
+    }
+
+    private var groupControl: some View {
+        HStack(spacing: 8) {
+            Text("GROUP")
+                .font(.mono(11, weight: .bold))
+                .foregroundStyle(Color.white.opacity(0.35)).tracking(1)
+            HStack(spacing: 0) {
+                ForEach(groupOptions, id: \.self) { g in
+                    let active = model.groupBy == g
+                    Button { model.setGroupBy(g) } label: {
+                        Text(groupOptionLabel(g))
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(active ? Color.neonPink : Color.white.opacity(0.5))
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(active ? Color.neonPink.opacity(0.16) : Color.clear)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(2)
+            .background(Color.white.opacity(0.05))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1))
+            Spacer()
+        }
+        .padding(.horizontal, 16).padding(.bottom, 12)
+    }
+
+    private func groupOptionLabel(_ g: VideoFeedModel.GroupBy) -> String {
+        switch g {
+        case .none: "None"
+        case .trainee: "Trainee"
+        case .month: "Uploaded On"
+        }
+    }
+
+    // MARK: Table
+
+    private var tableHeader: some View {
+        HStack(spacing: 10) {
+            sortHeaderCell(.name, label: "Name", flexible: true)
+            if showTraineeColumn {
+                sortHeaderCell(.trainee, label: "Trainee", width: 84)
+            }
+            sortHeaderCell(.date, icon: "square.and.arrow.up", width: 74, trailing: true)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(Color(hex: "0a0817"))
+        .overlay(Rectangle().fill(Color.white.opacity(0.12)).frame(height: 1),
+                 alignment: .bottom)
+    }
+
+    @ViewBuilder
+    private func sortHeaderCell(
+        _ key: VideoFeedModel.SortKey,
+        label: String? = nil,
+        icon: String? = nil,
+        width: CGFloat? = nil,
+        flexible: Bool = false,
+        trailing: Bool = false
+    ) -> some View {
+        let active = model.sortKey == key
+        let tint = active ? Color.neonPink : Color.white.opacity(0.55)
+        Button { model.setSort(key) } label: {
+            HStack(spacing: 4) {
+                if trailing { Spacer(minLength: 0) }
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+                } else if let label {
+                    Text(label).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                }
+                if active {
+                    Image(systemName: sortDirIcon).font(.system(size: 7))
+                }
+                if !trailing && !flexible { Spacer(minLength: 0) }
+            }
+            .foregroundStyle(tint)
+            .frame(maxWidth: flexible ? .infinity : nil,
+                   alignment: trailing ? .trailing : .leading)
+            .frame(width: width)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sortDirIcon: String {
+        model.sortDir == .asc ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill"
+    }
+
+    @ViewBuilder private var inFlightRows: some View {
+        ForEach(pendingInFlight) { cv in
+            VideoTableRow(
+                id: cv.id, title: cv.title, fileURL: cv.url,
+                traineeName: nil, traineeColorIndex: 0,
+                dateText: shortDate(cv.createdAt), showTrainee: showTraineeColumn,
+                isProcessing: cv.isProcessing
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard !cv.isProcessing else { return }
+                selected = VideoFeedItem(
+                    from: cv,
+                    clientId: traineeId ?? "",
+                    clientName: clientName ?? "",
+                    uploaderName: store.currentUser?.name ?? "",
+                    uploaderId: store.currentUser?.id ?? ""
+                )
             }
         }
-        .sheet(item: $selected) { item in
-            VideoDetailSheet(item: item)
-                .environment(store)
+    }
+
+    @ViewBuilder private var feedRows: some View {
+        ForEach(Array(model.rows.enumerated()), id: \.element.id) { idx, item in
+            if model.groupBy != .none && isGroupStart(idx) {
+                groupHeader(item)
+            }
+            VideoTableRow(
+                id: item.id, title: item.title, fileURL: item.fileURL,
+                traineeName: item.traineeName, traineeColorIndex: item.traineeColorIndex,
+                dateText: rowDate(item), showTrainee: showTraineeColumn
+            )
+            .background(idx.isMultiple(of: 2) ? Color.clear : Color.white.opacity(0.035))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+            .onTapGesture { selected = item }
+            .onAppear {
+                if item.id == model.rows.last?.id {
+                    Task { await model.loadMore() }
+                }
+            }
         }
+    }
+
+    private func isGroupStart(_ idx: Int) -> Bool {
+        guard idx > 0 else { return true }
+        return model.rows[idx].groupKey != model.rows[idx - 1].groupKey
+    }
+
+    private func groupHeader(_ item: VideoFeedItem) -> some View {
+        HStack(spacing: 9) {
+            if model.groupBy == .trainee {
+                Circle().fill(paletteColor(item.traineeColorIndex).text)
+                    .frame(width: 9, height: 9)
+            }
+            Text(item.groupLabel ?? "").font(.body(13, weight: .bold)).foregroundStyle(.white)
+            if let c = item.groupCount {
+                Text("\(c)").font(.mono(11, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.35))
+            }
+            Rectangle().fill(Color.white.opacity(0.09)).frame(height: 1)
+        }
+        .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 6)
+    }
+
+    private func rowDate(_ item: VideoFeedItem) -> String {
+        guard let d = item.createdAt else { return "—" }
+        return (model.groupBy == .month ? vidShortDateFmt : vidFullDateFmt).string(from: d)
+    }
+
+    private func shortDate(_ d: Date?) -> String {
+        guard let d else { return "" }
+        return (model.groupBy == .month ? vidShortDateFmt : vidFullDateFmt).string(from: d)
     }
 
     private var emptyState: some View {
         EmptyStateView(
             systemImage: "video.slash",
-            title: "No videos yet",
-            subtitle: "Record a client session to see it here"
+            title: model.search.isEmpty ? "No videos yet" : "No videos match your search",
+            subtitle: model.search.isEmpty
+                ? (isGlobal ? "Record a client session to see it here" : "Hit \"New\" to start a session")
+                : "Try a different search",
+            bordered: true
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16).padding(.top, 20)
     }
 }
 
-// MARK: - Video Feed Cell
+private let vidShortDateFmt: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "MM/dd"; return f
+}()
+private let vidFullDateFmt: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "MM/dd/yyyy"; return f
+}()
 
-struct VideoFeedCell: View {
-    let item: VideoFeedItem
+// MARK: - Video Table Row
+
+/// One row in the Video Library table: a thin 9:16 poster, title, optional trainee
+/// cell, and a date. Column widths match `VideosView.tableHeader`.
+struct VideoTableRow: View {
+    let id: String
+    let title: String
+    let fileURL: URL?
+    let traineeName: String?
+    let traineeColorIndex: Int
+    let dateText: String
+    let showTrainee: Bool
+    var isProcessing: Bool = false
+
     @State private var thumbnail: UIImage? = nil
 
-    private var uploaderColor: AvatarColor { paletteColor(item.uploaderColorIndex) }
-    private var traineeColor: AvatarColor { paletteColor(item.traineeColorIndex) }
-
-    private var traineeShortName: String {
-        guard let name = item.traineeName else { return "" }
-        let parts = name.components(separatedBy: " ")
-        guard let first = parts.first, !first.isEmpty else { return name }
-        if let last = parts.dropFirst().first, !last.isEmpty {
-            return "\(first) \(last.prefix(1))."
-        }
-        return first
-    }
-
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color.black
-
-            // Thumbnail: scaledToFit so non-matching ratios letterbox naturally
-            if let thumb = thumbnail {
-                Image(uiImage: thumb)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            // Bottom gradient for text readability
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(0.85), location: 0),
-                    .init(color: .black.opacity(0.10), location: 0.45),
-                    .init(color: .clear, location: 0.70),
-                ],
-                startPoint: .bottom,
-                endPoint: .top
-            )
-
-            // Centered play button
-            Circle()
-                .fill(.black.opacity(0.45))
-                .overlay(Circle().stroke(Color.white.opacity(0.5), lineWidth: 1))
-                .frame(width: 38, height: 38)
-                .overlay(
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white)
-                        .offset(x: 1)
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            // Footer: title + duration only
-            VStack(alignment: .leading, spacing: 6) {
-                Text(item.title)
-                    .font(.body(13, weight: .bold))
+        HStack(spacing: 10) {
+            HStack(spacing: 9) {
+                poster
+                Text(title)
+                    .font(.system(size: 14.5, weight: .medium))
                     .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .shadow(color: .black.opacity(0.5), radius: 1)
-                if !item.duration.isEmpty {
-                    HStack {
-                        Spacer()
-                        Text(item.duration)
-                            .font(.mono(10))
-                            .foregroundStyle(Color.white.opacity(0.85))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(.black.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-                }
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
-        }
-        // Client name chip — top left
-        .overlay(alignment: .topLeading) {
-            if item.traineeName != nil {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(traineeColor.bg)
-                        .frame(width: 14, height: 14)
-                        .overlay(
-                            Text(item.traineeInitials ?? "")
-                                .font(.system(size: 7, weight: .black))
-                                .foregroundStyle(traineeColor.text)
-                        )
-                        .overlay(Circle().stroke(traineeColor.border, lineWidth: 1))
-                    Text(traineeShortName)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if showTrainee {
+                HStack(spacing: 6) {
+                    Circle().fill(paletteColor(traineeColorIndex).text)
+                        .frame(width: 7, height: 7)
+                    Text(traineeName ?? "")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.white.opacity(0.62))
                         .lineLimit(1)
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(.black.opacity(0.55))
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(traineeColor.border, lineWidth: 1))
-                .padding(8)
+                .frame(width: 84, alignment: .leading)
+            }
+
+            Text(dateText)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Color.white.opacity(0.5))
+                .frame(width: 74, alignment: .trailing)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .task(id: fileURL) { await loadThumbnail() }
+    }
+
+    private var poster: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color(hex: "0d0710"))
+            if let thumb = thumbnail {
+                Image(uiImage: thumb).resizable().aspectRatio(contentMode: .fill)
+            }
+            if isProcessing {
+                ProgressView().tint(Color.neonCyan).scaleEffect(0.6)
+            } else {
+                Circle().fill(.black.opacity(0.35))
+                    .frame(width: 16, height: 16)
+                    .overlay(
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 7)).foregroundStyle(.white)
+                    )
             }
         }
-        // Trainer initials — top right
-        .overlay(alignment: .topTrailing) {
-            Text(item.uploaderInitials)
-                .font(.system(size: 10, weight: .black))
-                .foregroundStyle(uploaderColor.text)
-                .frame(width: 22, height: 22)
-                .background(uploaderColor.bg)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(uploaderColor.border, lineWidth: 1)
-                )
-                .padding(8)
-        }
-        .aspectRatio(9/16, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
-        .task(id: item.fileURL) { await loadThumbnail() }
+        .frame(width: 30, height: 53)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.1), lineWidth: 1))
     }
 
     private func loadThumbnail() async {
-        if let cached = ThumbnailCache.shared.get(item.id) { thumbnail = cached; return }
-        guard let url = item.fileURL else { return }
-        if let img = await generateThumbnail(from: url, size: CGSize(width: 480, height: 960)) {
-            ThumbnailCache.shared.set(img, for: item.id)
+        if let cached = ThumbnailCache.shared.get(id) { thumbnail = cached; return }
+        guard let url = fileURL else { return }
+        if let img = await generateThumbnail(from: url, size: CGSize(width: 120, height: 214)) {
+            ThumbnailCache.shared.set(img, for: id)
             thumbnail = img
         }
     }
@@ -238,13 +536,16 @@ struct VideoDetailSheet: View {
     @State private var showDeleteConfirm = false
     @State private var toast: VidToast? = nil
     @State private var isSaving = false
+    /// Reflects the title live after an in-sheet edit (the owning list updates
+    /// separately via `onSaved`).
+    @State private var liveTitle: String = ""
 
     private var canDelete: Bool {
         guard let roles = store.currentUser?.roles else { return false }
         return roles.contains("admin") || roles.contains("trainer_admin")
     }
     private var displayTitle: String {
-        store.feedVideos.first(where: { $0.id == item.id })?.title ?? item.title
+        liveTitle.isEmpty ? item.title : liveTitle
     }
 
     var body: some View {
@@ -281,6 +582,9 @@ struct VideoDetailSheet: View {
                 ThumbnailCache.shared.set(img, for: item.id)
                 thumbnail = img
             }
+        }
+        .onAppear {
+            if liveTitle.isEmpty { liveTitle = item.title }
         }
         .onDisappear {
             player?.pause()
@@ -369,7 +673,10 @@ struct VideoDetailSheet: View {
             description: desc.isEmpty ? nil : desc,
             tagIds: tagIds
         )
-        if success { onSaved?(trimmedTitle, desc.isEmpty ? nil : desc) }
+        if success {
+            liveTitle = trimmedTitle
+            onSaved?(trimmedTitle, desc.isEmpty ? nil : desc)
+        }
         isSaving = false
         editing = success ? false : editing
         toast = VidToast(message: success ? "Video details updated" : "Update failed", success: success)

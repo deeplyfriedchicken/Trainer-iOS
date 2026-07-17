@@ -70,7 +70,6 @@ struct ClientDetailView: View {
     @State private var videoNameInput = ""
     @State private var showVideoNameSheet = false
     @State private var videoToDelete: ClientVideo? = nil
-    @State private var selectedClientVideo: ClientVideo? = nil
     @State private var groupIdToDelete: String? = nil
     @State private var draftPlanToDelete: WorkoutPlan? = nil
 
@@ -203,28 +202,6 @@ struct ClientDetailView: View {
             }
         }
         .sheet(isPresented: $showVideoNameSheet) { videoNameSheet }
-        .sheet(item: $selectedClientVideo) { video in
-            let feedItem = VideoFeedItem(
-                from: video,
-                clientId: client.id,
-                clientName: client.fullName,
-                uploaderName: store.currentUser?.name ?? "",
-                uploaderId: store.currentUser?.id ?? ""
-            )
-            VideoDetailSheet(
-                item: feedItem,
-                onDelete: {
-                    client.videos.removeAll { $0.id == video.id }
-                    await store.deleteVideo(id: video.id, clientId: client.id)
-                },
-                onSaved: { newTitle, _ in
-                    if let idx = client.videos.firstIndex(where: { $0.id == video.id }) {
-                        client.videos[idx].title = newTitle
-                    }
-                }
-            )
-            .environment(store)
-        }
         .alert("Delete Video?", isPresented: Binding(
             get: { videoToDelete != nil },
             set: { if !$0 { videoToDelete = nil } }
@@ -323,6 +300,7 @@ struct ClientDetailView: View {
                             StatPill(value: "\(client.videos.count)", label: "Videos")
                             StatPill(value: client.lastSeen, label: "Last workout")
                             CopyProfileButton(clientId: client.id)
+                            ResetPinButton(clientId: client.id)
                         }
                         .padding(.horizontal, 20)
                     }
@@ -1050,24 +1028,23 @@ struct ClientDetailView: View {
                 )
                 .padding(.horizontal, 16)
             } else {
-                LazyVGrid(
-                    columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                    spacing: 8
-                ) {
-                    ForEach(client.videos) { v in
-                        let feedItem = VideoFeedItem(
-                            from: v,
-                            clientId: client.id,
-                            clientName: client.fullName,
-                            uploaderName: store.currentUser?.name ?? "",
-                            uploaderId: store.currentUser?.id ?? ""
-                        )
-                        VideoFeedCell(item: feedItem)
-                            .onTapGesture { selectedClientVideo = v }
+                // The same VideosView as the global tab, scoped to this trainee: no
+                // Trainee column/group option, and freshly-recorded clips (still
+                // processing) are merged on top until the server feed catches up.
+                VideosView(
+                    traineeId: client.id,
+                    embedded: true,
+                    searchPlaceholder: "Search videos, tags…",
+                    inFlight: client.videos.filter { $0.isProcessing },
+                    clientName: client.fullName,
+                    onVideoDeleted: { id in client.videos.removeAll { $0.id == id } },
+                    onVideoRenamed: { id, title in
+                        if let idx = client.videos.firstIndex(where: { $0.id == id }) {
+                            client.videos[idx].title = title
+                        }
                     }
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 16)
+                )
+                .environment(store)
             }
         }
         .padding(.bottom, 16)
@@ -2414,6 +2391,62 @@ struct CopyProfileButton: View {
         }
         .buttonStyle(.plain)
         .disabled(state == .loading)
+    }
+}
+
+// MARK: - ResetPinButton
+
+struct ResetPinButton: View {
+    let clientId: String
+    @State private var state: ResetState = .idle
+    @State private var showConfirm = false
+
+    enum ResetState { case idle, loading, done, failed }
+
+    var body: some View {
+        Button {
+            guard state != .loading else { return }
+            showConfirm = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: state == .done ? "checkmark" : "key")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(state == .done ? "PIN Reset" : state == .failed ? "Failed" : state == .loading ? "Resetting…" : "Reset PIN")
+                    .font(.mono(11))
+            }
+            .foregroundStyle(state == .done ? Color.neonCyan : state == .failed ? Color.neonRed : Color.white.opacity(0.55))
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(state == .done ? Color.neonCyan.opacity(0.12) : Color.white.opacity(0.06))
+            .overlay(Capsule().stroke(
+                state == .done ? Color.neonCyan.opacity(0.30) : Color.white.opacity(0.10),
+                lineWidth: 1))
+            .clipShape(Capsule())
+            .animation(.easeInOut(duration: 0.15), value: state)
+        }
+        .buttonStyle(.plain)
+        .disabled(state == .loading)
+        .alert("Reset PIN", isPresented: $showConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset PIN", role: .destructive) { resetPin() }
+        } message: {
+            Text("This will clear the client's PIN. They will be prompted to create a new one the next time they access their client portal.")
+        }
+    }
+
+    private func resetPin() {
+        state = .loading
+        Task {
+            do {
+                try await APIClient.shared.resetTraineePin(traineeId: clientId)
+                withAnimation { state = .done }
+                try? await Task.sleep(for: .seconds(2))
+                withAnimation { state = .idle }
+            } catch {
+                withAnimation { state = .failed }
+                try? await Task.sleep(for: .seconds(2))
+                withAnimation { state = .idle }
+            }
+        }
     }
 }
 

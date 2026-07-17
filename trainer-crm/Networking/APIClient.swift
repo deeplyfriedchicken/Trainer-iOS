@@ -258,10 +258,32 @@ final class APIClient {
 
     // No server endpoint for session quality yet — updates are local-only.
 
-    func fetchVideos(limit: Int = 20, offset: Int = 0) async throws -> [VideoListItemResponse] {
-        let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(
-            "/api/videos?limit=\(limit)&offset=\(offset)&status=ready"
-        )
+    /// Fetches the Video Library. Search (`q`), sort, and grouping are resolved
+    /// server-side (see backend ADR 0006); each row carries its group metadata.
+    func fetchVideos(
+        limit: Int = 20,
+        offset: Int = 0,
+        traineeId: String? = nil,
+        search: String? = nil,
+        sort: String? = nil,
+        order: String? = nil,
+        groupBy: String? = nil
+    ) async throws -> [VideoListItemResponse] {
+        var comps = URLComponents()
+        comps.path = "/api/videos"
+        var items: [URLQueryItem] = [
+            .init(name: "limit", value: String(limit)),
+            .init(name: "offset", value: String(offset)),
+            .init(name: "status", value: "ready"),
+        ]
+        if let traineeId { items.append(.init(name: "traineeId", value: traineeId)) }
+        if let search, !search.isEmpty { items.append(.init(name: "q", value: search)) }
+        if let sort { items.append(.init(name: "sort", value: sort)) }
+        if let order { items.append(.init(name: "order", value: order)) }
+        if let groupBy { items.append(.init(name: "groupBy", value: groupBy)) }
+        comps.queryItems = items
+        let path = comps.string ?? "/api/videos?limit=\(limit)&offset=\(offset)&status=ready"
+        let wrapper: PaginatedWrapper<VideoListItemResponse> = try await get(path)
         return wrapper.data
     }
 
@@ -284,6 +306,13 @@ final class APIClient {
     func fetchPortalLink(traineeId: String) async throws -> PortalLinkResponse {
         let wrapper: DataWrapper<PortalLinkResponse> = try await get("/api/trainees/\(traineeId)/portal-link")
         return wrapper.data
+    }
+
+    func resetTraineePin(traineeId: String) async throws {
+        let _: EmptyResponse = try await post(
+            "/api/trainees/\(traineeId)/reset-pin",
+            body: [String: String]()
+        )
     }
 
     func uploadVideo(fileURL: URL, title: String, traineeId: String,
@@ -513,6 +542,7 @@ struct TraineeDetailResponse: Decodable, Sendable {
 struct WorkoutSessionResponse: Decodable, Identifiable, Sendable {
     let id: String
     let comment: String?
+    let createdAt: Date?
     let workoutPlan: WorkoutPlanNestedResponse?
     let videoLinks: [VideoLinkResponse]?
     let exerciseLinks: [WorkoutExerciseLinkResponse]?
@@ -909,10 +939,20 @@ struct VideoListItemResponse: Decodable, Identifiable, Sendable {
     let createdAt: Date?
     let traineeId: String?
     let uploader: VideoUploaderResponse?
+    let trainee: VideoTraineeResponse?
     let videoTags: [VideoTagEntryResponse]?
+    // Server-computed grouping metadata (backend ADR 0006).
+    let groupKey: String?
+    let groupLabel: String?
+    let groupCount: Int?
 }
 
 struct VideoUploaderResponse: Decodable, Sendable {
+    let id: String
+    let name: String
+}
+
+struct VideoTraineeResponse: Decodable, Sendable {
     let id: String
     let name: String
 }

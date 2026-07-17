@@ -20,11 +20,6 @@ class AppStore {
     var uploadTasks: [UploadTask] = []
     var isShowingRecording = false
 
-    var feedVideos: [VideoFeedItem] = []
-    var isFeedLoading: Bool = false
-    var feedHasMore: Bool = true
-    private let feedPageSize = 20
-
     private let api = APIClient.shared
 
     // MARK: - Auth
@@ -162,7 +157,10 @@ class AppStore {
             return Workout(
                 id: w.id,
                 name: w.workoutPlan?.name ?? "Workout",
-                occurredAt: w.workoutPlan?.occurredAt,
+                // Use the session's own timestamp (when it was logged). The nested
+                // workoutPlan is nullable (ad-hoc workouts) and doesn't reliably
+                // include occurred_at, which was leaving every card as "Unknown date".
+                occurredAt: w.createdAt ?? w.workoutPlan?.occurredAt,
                 comment: w.comment,
                 exercises: (w.exerciseLinks ?? []).map { link in
                     let ex = link.exercise
@@ -271,10 +269,6 @@ class AppStore {
     }
 
     func updateFeedVideo(id: String, title: String, description: String?, tagIds: [String]) async -> Bool {
-        if let idx = feedVideos.firstIndex(where: { $0.id == id }) {
-            feedVideos[idx].title = title
-            feedVideos[idx].description = description
-        }
         do {
             try await api.editVideoMetadata(
                 id: id,
@@ -290,7 +284,6 @@ class AppStore {
     }
 
     func deleteVideo(id: String, clientId: String? = nil) async {
-        feedVideos.removeAll { $0.id == id }
         if let clientId, let cidx = clients.firstIndex(where: { $0.id == clientId }) {
             clients[cidx].videos.removeAll { $0.id == id }
         }
@@ -534,38 +527,6 @@ class AppStore {
     func clientCount(for trainerId: String) -> Int {
         clients.filter { $0.trainerId == trainerId }.count
     }
-
-    // MARK: - Video Feed
-
-    func loadFeedVideos() async {
-        guard !isFeedLoading else { return }
-        isFeedLoading = true
-        defer { isFeedLoading = false }
-        do {
-            let items = try await api.fetchVideos(limit: feedPageSize, offset: 0)
-            feedVideos = items.map { VideoFeedItem($0, clients: clients) }
-            feedHasMore = items.count == feedPageSize
-        } catch is CancellationError {
-        } catch let apiError as APIError {
-            if case .networkError(let e) = apiError, (e as? URLError)?.code == .cancelled { return }
-            self.error = apiError
-        } catch {
-            self.error = .networkError(error)
-        }
-    }
-
-    func loadMoreFeedVideos() async {
-        guard !isFeedLoading && feedHasMore else { return }
-        isFeedLoading = true
-        defer { isFeedLoading = false }
-        do {
-            let items = try await api.fetchVideos(limit: feedPageSize, offset: feedVideos.count)
-            feedVideos.append(contentsOf: items.map { VideoFeedItem($0, clients: clients) })
-            feedHasMore = items.count == feedPageSize
-        } catch {
-            self.error = (error as? APIError) ?? .networkError(error)
-        }
-    }
 }
 
 // MARK: - API → Model conversions
@@ -628,22 +589,3 @@ extension Trainer {
     }
 }
 
-extension VideoFeedItem {
-    init(_ r: VideoListItemResponse, clients: [Client]) {
-        let client = clients.first(where: { $0.id == r.traineeId })
-        self.init(
-            id: r.id,
-            title: r.title ?? "Recording",
-            fileURL: r.fileUrl.flatMap(URL.init),
-            durationSeconds: r.durationSeconds ?? 0,
-            createdAt: r.createdAt,
-            uploaderName: r.uploader?.name ?? "Unknown",
-            uploaderId: r.uploader?.id ?? "",
-            traineeId: r.traineeId,
-            traineeName: client?.fullName,
-            tags: r.videoTags?.map(\.tag.name) ?? [],
-            tagIds: r.videoTags?.map(\.tag.id) ?? [],
-            description: r.description
-        )
-    }
-}

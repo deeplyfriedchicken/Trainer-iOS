@@ -430,6 +430,7 @@
 				INFOPLIST_FILE = "trainer-crm/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = TBDFit;
 				INFOPLIST_KEY_CFBundleURLTypes = "({CFBundleURLSchemes = ('trainer-crm');})";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trainer CRM needs camera access to record client training sessions.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Trainer CRM needs microphone access to record audio during client sessions.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trainer CRM saves recorded session videos to your camera roll.";
@@ -443,7 +444,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.03;
+				MARKETING_VERSION = 1.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "tbd.fit.trainer-crm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -470,6 +471,7 @@
 				INFOPLIST_FILE = "trainer-crm/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = TBDFit;
 				INFOPLIST_KEY_CFBundleURLTypes = "({CFBundleURLSchemes = ('trainer-crm');})";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Trainer CRM needs camera access to record client training sessions.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Trainer CRM needs microphone access to record audio during client sessions.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Trainer CRM saves recorded session videos to your camera roll.";
@@ -483,7 +485,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.03;
+				MARKETING_VERSION = 1.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "tbd.fit.trainer-crm";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;

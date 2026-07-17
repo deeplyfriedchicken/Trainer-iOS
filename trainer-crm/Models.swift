@@ -130,6 +130,13 @@ struct VideoFeedItem: Identifiable {
     let tagIds: [String]
     var description: String?
 
+    // Server-computed grouping metadata (see backend ADR 0006). Non-nil only when
+    // the list was fetched with a groupBy other than "none". The Video Library opens a
+    // new section header whenever `groupKey` changes.
+    var groupKey: String? = nil
+    var groupLabel: String? = nil
+    var groupCount: Int? = nil
+
     var duration: String {
         guard durationSeconds > 0 else { return "" }
         return String(format: "%02d:%02d", durationSeconds / 60, durationSeconds % 60)
@@ -173,6 +180,28 @@ extension VideoFeedItem {
             tags: [],
             tagIds: [],
             description: nil
+        )
+    }
+
+    /// Maps a server list row. The backend now returns the trainee inline (name +
+    /// grouping metadata), so we no longer reconstruct it from a local `clients` list.
+    init(_ r: VideoListItemResponse) {
+        self.init(
+            id: r.id,
+            title: r.title ?? "Recording",
+            fileURL: r.fileUrl.flatMap(URL.init),
+            durationSeconds: r.durationSeconds ?? 0,
+            createdAt: r.createdAt,
+            uploaderName: r.uploader?.name ?? "Unknown",
+            uploaderId: r.uploader?.id ?? "",
+            traineeId: r.traineeId ?? r.trainee?.id,
+            traineeName: r.trainee?.name,
+            tags: r.videoTags?.map(\.tag.name) ?? [],
+            tagIds: r.videoTags?.map(\.tag.id) ?? [],
+            description: r.description,
+            groupKey: r.groupKey,
+            groupLabel: r.groupLabel,
+            groupCount: r.groupCount
         )
     }
 }
