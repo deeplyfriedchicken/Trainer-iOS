@@ -143,7 +143,7 @@ class AppStore {
                 name: plan.name,
                 versionStatus: plan.versionStatus ?? "draft",
                 versionNumber: plan.versionNumber ?? 1,
-                occurredAt: plan.occurredAt,
+                occurredAt: plan.publishedAt ?? plan.createdAt,
                 exercises: exs
             )
         }
@@ -157,10 +157,7 @@ class AppStore {
             return Workout(
                 id: w.id,
                 name: w.workoutPlan?.name ?? "Workout",
-                // Use the session's own timestamp (when it was logged). The nested
-                // workoutPlan is nullable (ad-hoc workouts) and doesn't reliably
-                // include occurred_at, which was leaving every card as "Unknown date".
-                occurredAt: w.createdAt ?? w.workoutPlan?.occurredAt,
+                occurredAt: w.createdAt,
                 comment: w.comment,
                 exercises: (w.exerciseLinks ?? []).map { link in
                     let ex = link.exercise

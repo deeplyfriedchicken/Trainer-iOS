@@ -562,7 +562,6 @@ struct WorkoutSessionResponse: Decodable, Identifiable, Sendable {
 struct WorkoutPlanNestedResponse: Decodable, Sendable {
     let id: String
     let name: String
-    let occurredAt: Date?
 }
 
 struct ExerciseSetLogResponse: Decodable, Sendable {
@@ -611,7 +610,8 @@ struct WorkoutPlanDetailResponse: Decodable, Identifiable, Sendable {
     let workoutPlanGroupId: String?
     let versionStatus: String?
     let versionNumber: Int?
-    let occurredAt: Date?
+    let publishedAt: Date?
+    let createdAt: Date?
     let exercises: [ExerciseDetailResponse]?
     let videoLinks: [VideoLinkResponse]?
 }
